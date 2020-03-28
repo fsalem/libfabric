@@ -1,11 +1,11 @@
 dnl
 dnl Copyright (c) 2016-2017 Cisco Systems, Inc.  All rights reserved.
-dnl Copyright (c) 2018 Intel Corporation, Inc.  All rights reserved.
+dnl Copyright (c) 2018-2019 Intel Corporation, Inc.  All rights reserved.
 dnl
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.57)
-AC_INIT([fabtests], [1.7.0a1], [ofiwg@lists.openfabrics.org])
+AC_INIT([fabtests], [1.10.0a1], [ofiwg@lists.openfabrics.org])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR(config)
 AC_CONFIG_HEADERS(config.h)
@@ -92,7 +92,7 @@ AM_CONDITIONAL(HAVE_CLOCK_GETTIME, [test $have_clock_gettime -eq 1])
 AC_ARG_WITH([libfabric],
             AC_HELP_STRING([--with-libfabric], [Use non-default libfabric location - default NO]),
             [AS_IF([test -d $withval/lib64], [fab_libdir="lib64"], [fab_libdir="lib"])
-             CPPFLAGS="-I $withval/include $CPPFLAGS"
+             CPPFLAGS="-I$withval/include $CPPFLAGS"
              LDFLAGS="-L$withval/$fab_libdir $LDFLAGS"],
             [])
 
@@ -122,4 +122,5 @@ AC_DEFINE_UNQUOTED([HAVE_EPOLL], [$have_epoll],
 		   [Defined to 1 if Linux epoll is available])
 
 AC_CONFIG_FILES([Makefile fabtests.spec])
+
 AC_OUTPUT

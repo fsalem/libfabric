@@ -136,6 +136,17 @@ features of libfabric.
 *fi_unexpected_msg*
 : Tests the send and receive handling of unexpected tagged messages.
 
+*fi_unmap_mem*
+: Tests data transfers where the transmit buffer is mmapped and
+  unmapped between each transfer, but the virtual address of the transmit
+  buffer tries to remain the same.  This test is used to validate the
+  correct behavior of memory registration caches.
+
+*fi_bw*
+: Performs a one-sided bandwidth test with an option for data verification.
+  A sleep time on the receiving side can be enabled in order to allow
+  the sender to get ahead of the receiver.
+
 # Benchmarks
 
 The client and the server exchange messages in either a ping-pong manner,
@@ -201,6 +212,15 @@ testing scope is limited.
 *fi_resource_freeing*
 : Allocates and closes fabric resources to check for proper cleanup.
 
+# Multinode
+
+This test runs a series of tests over multiple formats and patterns to help
+validate at scale. The patterns are an all to all, one to all, all to one and
+a ring. The tests also run accross multiple capabilites, such as messages, rma,
+atomics, and tagged messages. Currently, there is no option to run these 
+capabilities and patterns independently, however the test is short enough to be
+all run at once.   
+
 # Ubertest
 
 This is a comprehensive latency, bandwidth, and functionality test that can
@@ -210,7 +230,7 @@ result, a full ubertest run can take a significant amount of time.  Because
 ubertest iterates over input variables, it relies on a test configuration
 file for control, rather than extensive command line options that are used
 by other fabtests.  A configuration file must be constructured for each
-provider.  Example test configurations are at /test_configs.
+provider.  Example test configurations are at test_configs.
 
 *fi_ubertest*
 : This test takes a configure file as input.  The file contains a list of
@@ -220,6 +240,97 @@ provider.  Example test configurations are at /test_configs.
   For example, if there are 8 test variables, with 6 having 2 possible
   values and 2 having 3 possible values, ubertest will execute 576 total
   iterations of each test.
+
+### Config file options
+
+The following keys and respective key values may be used in the config file.
+
+*prov_name*
+: Identify the provider(s) to test.  E.g. udp, tcp, verbs,
+  ofi_rxm;verbs; ofi_rxd;udp.
+
+*test_type*
+: FT_TEST_LATENCY, FT_TEST_BANDWIDTH, FT_TEST_UNIT
+
+*test_class*
+: FT_CAP_MSG, FT_CAP_TAGGED, FT_CAP_RMA, FT_CAP_ATOMIC
+
+*class_function*
+: For FT_CAP_MSG and FT_CAP_TAGGED: FT_FUNC_SEND, FT_FUNC_SENDV, FT_FUNC_SENDMSG,
+  FT_FUNC_INJECT, FT_FUNC_INJECTDATA, FT_FUNC_SENDDATA
+
+  For FT_CAP_RMA: FT_FUNC_WRITE, FT_FUNC_WRITEV, FT_FUNC_WRITEMSG,
+  FT_FUNC_WRITEDATA, FT_FUNC_INJECT_WRITE, FT_FUNC_INJECT_WRITEDATA
+  FT_FUNC_READ, FT_FUNC_READV, FT_FUNC_READMSG
+
+  For FT_CAP_ATOMIC: FT_FUNC_ATOMIC, FT_FUNC_ATOMICV, FT_FUNC_ATOMICMSG,
+  FT_FUNC_INJECT_ATOMIC, FT_FUNC_FETCH_ATOMIC, FT_FUNC_FETCH_ATOMICV,
+  FT_FUNC_FETCH_ATOMICMSG, FT_FUNC_COMPARE_ATOMIC, FT_FUNC_COMPARE_ATOMICV,
+  FT_FUNC_COMPARE_ATOMICMSG
+
+*constant_caps - values OR'ed together*
+: FI_RMA, FI_MSG, FI_SEND, FI_RECV, FI_READ,
+  FI_WRITE, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_TAGGED, FI_DIRECTED_RECV
+
+*mode - values OR'ed together*
+: FI_CONTEXT, FI_RX_CQ_DATA
+
+*ep_type*
+: FI_EP_MSG, FI_EP_DGRAM, FI_EP_RDM
+
+*comp_type*
+: FT_COMP_QUEUE, FT_COMP_CNTR, FT_COMP_ALL
+
+*av_type*
+: FI_AV_MAP, FI_AV_TABLE
+
+*eq_wait_obj*
+: FI_WAIT_NONE, FI_WAIT_UNSPEC, FI_WAIT_FD, FI_WAIT_MUTEX_COND
+
+*cq_wait_obj*
+: FI_WAIT_NONE, FI_WAIT_UNSPEC, FI_WAIT_FD, FI_WAIT_MUTEX_COND
+
+*cntr_wait_obj*
+: FI_WAIT_NONE, FI_WAIT_UNSPEC, FI_WAIT_FD, FI_WAIT_MUTEX_COND
+
+*threading*
+: FI_THREAD_UNSPEC, FI_THREAD_SAFE, FI_THREAD_FID, FI_THREAD_DOMAIN,
+  FI_THREAD_COMPLETION, FI_THREAD_ENDPOINT
+
+*progress*
+: FI_PROGRESS_MANUAL, FI_PROGRESS_AUTO, FI_PROGRESS_UNSPEC
+
+*mr_mode*
+: (Values OR'ed together) FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED,
+  FI_MR_PROV_KEY
+
+*op*
+: For FT_CAP_ATOMIC: FI_MIN, FI_MAX, FI_SUM, FI_PROD, FI_LOR, FI_LAND, FI_BOR,
+  FI_BAND, FI_LXOR, FI_BXOR, FI_ATOMIC_READ, FI_ATOMIC_WRITE, FI_CSWAP,
+  FI_CSWAP_NE, FI_CSWAP_LE, FI_CSWAP_LT, FI_CSWAP_GE, FI_CSWAP_GT, FI_MSWAP
+
+*datatype*
+: For FT_CAP_ATOMIC: FI_INT8, FI_UINT8, FI_INT16, FI_UINT16, FI_INT32,
+  FI_UINT32, FI_INT64, FI_UINT64, FI_FLOAT, FI_DOUBLE, FI_FLOAT_COMPLEX,
+  FI_DOUBLE_COMPLEX, FI_LONG_DOUBLE, FI_LONG_DOUBLE_COMPLE
+
+*msg_flags - values OR'ed together*
+: For FT_FUNC_XXXMSG: FI_REMOTE_CQ_DATA, FI_COMPLETION
+
+*rx_cq_bind_flags - values OR'ed together*
+: FI_SELECTIVE_COMPLETION
+
+*tx_cq_bind_flags - values OR'ed together*
+: FI_SELECTIVE_COMPLETION
+
+*rx_op_flags - values OR'ed together*
+: FI_COMPLETION
+
+*tx_op_flags - values OR'ed together*
+: FI_COMPLETION
+
+*test_flags - values OR'ed together*
+: FT_FLAG_QUICKTEST
 
 # HOW TO RUN TESTS
 
@@ -273,6 +384,11 @@ the list available for that test.
   synchronization.  A port for the out-of-band connection may be specified
   as part of this option to override the default.
 
+*-E[=oob_port]*
+: Enables out-of-band (via sockets) address exchange only. A port for the
+  out-of-band connection may be specified as part of this option to override
+  the default. Cannot be used together with the '-b' option.
+
 *-I <number>*
 : Number of data transfer iterations.
 
@@ -312,6 +428,9 @@ the list available for that test.
 *-M <mcast_addr>*
 : For multicast tests, specifies the address of the multicast group to join.
 
+*-v*
+: Add data verification check to data transfers.
+
 # USAGE EXAMPLES
 
 ## A simple example
@@ -332,6 +451,15 @@ This will run "fi_rdm_atomic" for all atomic operations with
 	- 1000 iterations
 	- 1024 bytes message size
 	- server node as 123.168.0.123
+
+## Run multinode tests
+
+	Server and clients are invoked with the same command: 
+		fi_multinode -n <number of processes> -s <server_addr> -C <mode>
+	
+	A process on the server must be started before any of the clients can be started 
+	succesfully. -C lists the mode that the tests will run in. Currently the options are
+  for rma and msg. If not provided, the test will default to msg. 
 
 ## Run fi_ubertest
 

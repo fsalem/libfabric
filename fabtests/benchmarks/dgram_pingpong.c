@@ -59,11 +59,7 @@ static int run(void)
 		for (i = 0; i < TEST_CNT; i++) {
 			if (!ft_use_size(i, opts.sizes_enabled))
 				continue;
-
 			opts.transfer_size = test_size[i].size;
-			if (opts.transfer_size > fi->ep_attr->max_msg_size)
-				continue;
-
 			init_test(&opts, test_name, sizeof(test_name));
 			ret = pingpong();
 			if (ret)
@@ -99,7 +95,7 @@ int main(int argc, char **argv)
 			break;
 		default:
 			ft_parse_benchmark_opts(op, optarg);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			ft_parsecsopts(op, optarg, &opts);
 			break;
 		case '?':
@@ -120,7 +116,7 @@ int main(int argc, char **argv)
 		hints->ep_attr->max_msg_size = opts.transfer_size;
 	hints->caps = FI_MSG;
 	hints->mode |= FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 	hints->domain_attr->threading = FI_THREAD_DOMAIN;
 
 	ret = run();

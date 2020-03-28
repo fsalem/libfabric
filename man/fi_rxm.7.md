@@ -13,10 +13,10 @@ fi_rxm \- The RxM (RDM over MSG) Utility Provider
 
 The RxM provider (ofi_rxm) is an utility provider that supports FI_EP_RDM type
 endpoint emulated over FI_EP_MSG type endpoint(s) of an underlying core provider.
-FI_EP_RDM endpoints have a reliable unconnected messaging interface and RxM
-emulates this by hiding the connection management of underlying FI_EP_MSG
-endpoints from the user. Additionally, RxM can hide memory registration
-requirement from a core provider like verbs if the apps don't support it.
+FI_EP_RDM endpoints have a reliable datagram interface and RxM emulates this by
+hiding the connection management of underlying FI_EP_MSG endpoints from the user.
+Additionally, RxM can hide memory registration requirement from a core provider
+like verbs if the apps don't support it.
 
 # REQUIREMENTS
 
@@ -29,7 +29,7 @@ RxM provider requires the core provider to support the following features:
   * RMA read/write (FI_RMA) - Used for implementing rendezvous protocol for
     large messages.
 
-  * FI_OPT_CM_DATA_SIZE of at least 48 bytes
+  * FI_OPT_CM_DATA_SIZE of at least 24 bytes.
 
 ## Requirements for applications
 
@@ -54,7 +54,8 @@ The RxM provider currently supports *FI_MSG*, *FI_TAGGED*, *FI_RMA* and *FI_ATOM
 
 *Progress*
 : The RxM provider supports both *FI_PROGRESS_MANUAL* and *FI_PROGRESS_AUTO*.
-  The former is more optimal.
+  Manual progress in general has better connection scale-up and lower CPU utilization
+  since there's no separate auto-progress thread.
 
 *Addressing Formats*
 : FI_SOCKADDR, FI_SOCKADDR_IN
@@ -88,7 +89,7 @@ RxM provider does not support the following features:
 
   * Multicast
 
-  * FI_ADDR_STR, FI_SYNC_ERR
+  * FI_SYNC_ERR
 
   * Reporting unknown source addr data as part of completions
 
@@ -111,6 +112,11 @@ hints parameter specifies FI_ATOMIC. If FI_ATOMIC is requested, message order
 FI_ORDER_RAR, FI_ORDER_RAW, FI_ORDER_WAR, FI_ORDER_WAW, FI_ORDER_SAR, and
 FI_ORDER_SAW can not be supported.
 
+## Miscellaneous limitations
+ * RxM protocol peers should have same endian-ness otherwise connections won't
+   successfully complete. This enables better performance at run-time as byte
+   order translations are avoided.
+
 # RUNTIME PARAMETERS
 
 The ofi_rxm provider checks for the following environment variables.
@@ -127,7 +133,7 @@ The ofi_rxm provider checks for the following environment variables.
 
 *FI_OFI_RXM_SAR_LIMIT*
 : Set this environment variable to control the RxM SAR (Segmentation And Reassembly)
-  protocol. Messages of size greater than this (default: 256 Kb) would be transmitted
+  protocol. Messages of size greater than this (default: 128 Kb) would be transmitted
   via rendezvous protocol.
 
 *FI_OFI_RXM_USE_SRX*
@@ -149,6 +155,11 @@ The ofi_rxm provider checks for the following environment variables.
 *FI_UNIVERSE_SIZE*
 : Defines the expected number of ranks / peers an endpoint would communicate
 with (default: 256).
+
+*FI_OFI_RXM_CM_PROGRESS_INTERVAL*
+: Defines the duration of time in microseconds between calls to RxM CM progression
+  functions when using manual progress. Higher values may provide less noise for 
+  calls to fi_cq read functions, but may increase connection setup time (default: 10000)
 
 # Tuning
 
@@ -173,6 +184,18 @@ FI_OFI_RXM_MSG_RX_SIZE env variables are set to only required values.
 The data transfer API may return -FI_EAGAIN during on-demand connection setup
 of the core provider FI_MSG_EP. See [`fi_msg`(3)](fi_msg.3.html) for a detailed
 description of handling FI_EAGAIN.
+
+# Troubleshooting / Known issues
+
+If an RxM endpoint is expected to communicate with more peers than the default
+value of FI_UNIVERSE_SIZE (256) CQ overruns can happen. To avoid this set a
+higher value for FI_UNIVERSE_SIZE. CQ overrun can make a MSG endpoint unusable.
+
+At higher # of ranks, there may be connection errors due to a node running out
+of memory. The workaround is to use shared receive contexts for the MSG provider
+(FI_OFI_RXM_USE_SRX=1) or reduce eager message size (FI_OFI_RXM_BUFFER_SIZE) and
+MSG provider TX/RX queue sizes (FI_OFI_RXM_MSG_TX_SIZE / FI_OFI_RXM_MSG_RX_SIZE).
+
 
 # SEE ALSO
 

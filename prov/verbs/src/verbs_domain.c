@@ -37,22 +37,45 @@
 #include "fi_verbs.h"
 #include <malloc.h>
 
-/* This is the memory notifier for the entire verbs provider */
-static struct fi_ibv_mem_notifier *fi_ibv_mem_notifier = NULL;
 
-static int fi_ibv_domain_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
+#if VERBS_HAVE_QUERY_EX
+static int vrb_odp_flag(struct ibv_context *verbs)
 {
-	struct fi_ibv_domain *domain;
-	struct fi_ibv_eq *eq;
+	struct ibv_query_device_ex_input input = {0};
+	struct ibv_device_attr_ex attr;
+	int ret;
 
-	domain = container_of(fid, struct fi_ibv_domain,
+	if (!vrb_gl_data.use_odp)
+		return 0;
+
+	ret = ibv_query_device_ex(verbs, &input, &attr);
+	if (ret)
+		return 0;
+
+	return attr.odp_caps.general_caps & IBV_ODP_SUPPORT ?
+	       VRB_USE_ODP : 0;
+}
+#else
+static int vrb_odp_flag(struct ibv_context *verbs)
+{
+	return 0;
+}
+#endif /* VERBS_HAVE_QUERY_EX */
+
+
+static int vrb_domain_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
+{
+	struct vrb_domain *domain;
+	struct vrb_eq *eq;
+
+	domain = container_of(fid, struct vrb_domain,
 			      util_domain.domain_fid.fid);
 
 	switch (bfid->fclass) {
 	case FI_CLASS_EQ:
 		switch (domain->ep_type) {
 		case FI_EP_MSG:
-			eq = container_of(bfid, struct fi_ibv_eq, eq_fid);
+			eq = container_of(bfid, struct vrb_eq, eq_fid);
 			domain->eq = eq;
 			domain->eq_flags = flags;
 			break;
@@ -72,194 +95,28 @@ static int fi_ibv_domain_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 	return 0;
 }
 
-void fi_ibv_mem_notifier_handle_hook(void *arg, RbtIterator iter)
-{
-	struct iovec *key;
-	struct fi_ibv_subscr_entry *subscr_entry;
-	struct fi_ibv_monitor_entry *entry;
-
-	rbtKeyValue(fi_ibv_mem_notifier->subscr_storage, iter,
-		    (void *)&key, (void *)&entry);
-	dlist_foreach_container(&entry->subscription_list, struct fi_ibv_subscr_entry,
-				subscr_entry, entry) {
-		ofi_monitor_add_event_to_nq(subscr_entry->subscription);
-	}
-
-	VERBS_DBG(FI_LOG_MR, "Write event for region %p:%lu\n",
-		  key->iov_base, key->iov_len);
-}
-
-static inline void
-fi_ibv_mem_notifier_search_iov(struct fi_ibv_mem_notifier *notifier,
-			       struct iovec *iov)
-{
-	RbtIterator iter;
-	iter = rbtFind(notifier->subscr_storage, (void *)iov);
-	if (iter) {
-		VERBS_DBG(FI_LOG_MR, "Catch hook for memory %p:%lu\n",
-			  iov->iov_base, iov->iov_len);
-		rbtTraversal(fi_ibv_mem_notifier->subscr_storage, iter, NULL,
-			     fi_ibv_mem_notifier_handle_hook);
-	}
-}
-
-void fi_ibv_mem_notifier_free_hook(void *ptr, const void *caller)
-{
-	struct iovec iov = {
-		.iov_base = ptr,
-		.iov_len = malloc_usable_size(ptr),
-	};
-	OFI_UNUSED(caller);
-
-	FI_IBV_MEMORY_HOOK_BEGIN(fi_ibv_mem_notifier)
-
-	free(ptr);
-
-	if (!ptr)
-		goto out;
-	fi_ibv_mem_notifier_search_iov(fi_ibv_mem_notifier, &iov);
-out:
-	FI_IBV_MEMORY_HOOK_END(fi_ibv_mem_notifier)
-}
-
-void *fi_ibv_mem_notifier_realloc_hook(void *ptr, size_t size, const void *caller)
-{
-	struct iovec iov = {
-		.iov_base = ptr,
-		.iov_len = malloc_usable_size(ptr),
-	};
-	void *ret_ptr;
-	OFI_UNUSED(caller);
-
-	FI_IBV_MEMORY_HOOK_BEGIN(fi_ibv_mem_notifier)
-	
-	ret_ptr = realloc(ptr, size);
-
-	if (!ptr)
-		goto out;
-	fi_ibv_mem_notifier_search_iov(fi_ibv_mem_notifier, &iov);
-out:
-	FI_IBV_MEMORY_HOOK_END(fi_ibv_mem_notifier)
-	return ret_ptr;
-}
-
-static void fi_ibv_mem_notifier_finalize(struct fi_ibv_mem_notifier *notifier)
-{
-#ifdef HAVE_GLIBC_MALLOC_HOOKS
-	OFI_UNUSED(notifier);
-	assert(fi_ibv_mem_notifier && (notifier == fi_ibv_mem_notifier));
-	pthread_mutex_lock(&fi_ibv_mem_notifier->lock);
-	if (--fi_ibv_mem_notifier->ref_cnt == 0) {
-		ofi_set_mem_free_hook(fi_ibv_mem_notifier->prev_free_hook);
-		ofi_set_mem_realloc_hook(fi_ibv_mem_notifier->prev_realloc_hook);
-		rbtDelete(fi_ibv_mem_notifier->subscr_storage);
-		fi_ibv_mem_notifier->prev_free_hook = NULL;
-		fi_ibv_mem_notifier->prev_realloc_hook = NULL;
-		pthread_mutex_unlock(&fi_ibv_mem_notifier->lock);
-		pthread_mutex_destroy(&fi_ibv_mem_notifier->lock);
-		free(fi_ibv_mem_notifier);
-		fi_ibv_mem_notifier = NULL;
-		return;
-	}
-	pthread_mutex_unlock(&fi_ibv_mem_notifier->lock);
-#endif
-}
-
-#ifdef HAVE_GLIBC_MALLOC_HOOKS
-static int fi_ibv_mem_notifier_find_within(void *a, void *b)
-{
-	struct iovec *iov1 = a, *iov2 = b;
-
-	if (ofi_iov_shifted_left(iov1, iov2))
-		return -1;
-	else if (ofi_iov_shifted_right(iov1, iov2))
-		return 1;
-	else
-		return 0;
-}
-
-static int fi_ibv_mem_notifier_find_overlap(void *a, void *b)
-{
-	struct iovec *iov1 = a, *iov2 = b;
-
-	if (ofi_iov_left(iov1, iov2))
-		return -1;
-	else if (ofi_iov_right(iov1, iov2))
-		return 1;
-	else
-		return 0;
-}
-#endif
-
-static struct fi_ibv_mem_notifier *fi_ibv_mem_notifier_init(void)
-{
-#ifdef HAVE_GLIBC_MALLOC_HOOKS
-	pthread_mutexattr_t mutex_attr;
-	if (fi_ibv_mem_notifier) {
-		/* already initialized */
-		fi_ibv_mem_notifier->ref_cnt++;
-		goto fn;
-	}
-	fi_ibv_mem_notifier = calloc(1, sizeof(*fi_ibv_mem_notifier));
-	if (!fi_ibv_mem_notifier)
-		goto fn;
-
-	fi_ibv_mem_notifier->subscr_storage =
-		rbtNew(fi_ibv_gl_data.mr_cache_merge_regions ?
-		       fi_ibv_mem_notifier_find_overlap :
-		       fi_ibv_mem_notifier_find_within);
-	if (!fi_ibv_mem_notifier->subscr_storage)
-		goto err1;
-
-	pthread_mutexattr_init(&mutex_attr);
-	pthread_mutexattr_settype(&mutex_attr, PTHREAD_MUTEX_RECURSIVE);
-	if (pthread_mutex_init(&fi_ibv_mem_notifier->lock, &mutex_attr))
-		goto err2;
-	pthread_mutexattr_destroy(&mutex_attr);
-
-	pthread_mutex_lock(&fi_ibv_mem_notifier->lock);
-	fi_ibv_mem_notifier->prev_free_hook = ofi_get_mem_free_hook();
-	fi_ibv_mem_notifier->prev_realloc_hook = ofi_get_mem_realloc_hook();
-	ofi_set_mem_free_hook(fi_ibv_mem_notifier_free_hook);
-	ofi_set_mem_realloc_hook(fi_ibv_mem_notifier_realloc_hook);
-	fi_ibv_mem_notifier->ref_cnt++;
-	pthread_mutex_unlock(&fi_ibv_mem_notifier->lock);
-fn:
-	return fi_ibv_mem_notifier;
-
-err2:
-	rbtDelete(fi_ibv_mem_notifier->subscr_storage);
-err1:
-	free(fi_ibv_mem_notifier);
-	fi_ibv_mem_notifier = NULL;
-	return NULL;
-#else
-	return NULL;
-#endif
-}
-
-static int fi_ibv_domain_close(fid_t fid)
+static int vrb_domain_close(fid_t fid)
 {
 	int ret;
-	struct fi_ibv_fabric *fab;
-	struct fi_ibv_domain *domain =
-		container_of(fid, struct fi_ibv_domain,
+	struct vrb_fabric *fab;
+	struct vrb_domain *domain =
+		container_of(fid, struct vrb_domain,
 			     util_domain.domain_fid.fid);
 
 	switch (domain->ep_type) {
 	case FI_EP_DGRAM:
 		fab = container_of(&domain->util_domain.fabric->fabric_fid,
-				   struct fi_ibv_fabric,
+				   struct vrb_fabric,
 				   util_fabric.fabric_fid.fid);
 		/* Even if it's invoked not for the first time
 		 * (e.g. multiple domains per fabric), it's safe
 		 */
-		if (fi_ibv_gl_data.dgram.use_name_server)
+		if (vrb_gl_data.dgram.use_name_server)
 			ofi_ns_stop_server(&fab->name_server);
 		break;
 	case FI_EP_MSG:
-		if (domain->use_xrc) {
-			ret = fi_ibv_domain_xrc_cleanup(domain);
+		if (domain->flags & VRB_USE_XRC) {
+			ret = vrb_domain_xrc_cleanup(domain);
 			if (ret)
 				return ret;
 		}
@@ -270,11 +127,7 @@ static int fi_ibv_domain_close(fid_t fid)
 		return -FI_EINVAL;
 	}
 
-	if (fi_ibv_gl_data.mr_cache_enable) {
-		ofi_mr_cache_cleanup(&domain->cache);
-		ofi_monitor_cleanup(&domain->monitor);
-		fi_ibv_mem_notifier_finalize(domain->notifier);
-	}
+	ofi_mr_cache_cleanup(&domain->cache);
 
 	if (domain->pd) {
 		ret = ibv_dealloc_pd(domain->pd);
@@ -292,7 +145,7 @@ static int fi_ibv_domain_close(fid_t fid)
 	return 0;
 }
 
-static int fi_ibv_open_device_by_name(struct fi_ibv_domain *domain, const char *name)
+static int vrb_open_device_by_name(struct vrb_domain *domain, const char *name)
 {
 	struct ibv_context **dev_list;
 	int i, ret = -FI_ENODEV;
@@ -308,8 +161,8 @@ static int fi_ibv_open_device_by_name(struct fi_ibv_domain *domain, const char *
 		const char *rdma_name = ibv_get_device_name(dev_list[i]->device);
 		switch (domain->ep_type) {
 		case FI_EP_MSG:
-			ret = domain->use_xrc ?
-				fi_ibv_cmp_xrc_domain_name(name, rdma_name) :
+			ret = domain->flags & VRB_USE_XRC ?
+				vrb_cmp_xrc_domain_name(name, rdma_name) :
 				strcmp(name, rdma_name);
 			break;
 		case FI_EP_DGRAM:
@@ -332,74 +185,57 @@ static int fi_ibv_open_device_by_name(struct fi_ibv_domain *domain, const char *
 	return ret;
 }
 
-static struct fi_ops fi_ibv_fid_ops = {
+static struct fi_ops vrb_fid_ops = {
 	.size = sizeof(struct fi_ops),
-	.close = fi_ibv_domain_close,
-	.bind = fi_ibv_domain_bind,
+	.close = vrb_domain_close,
+	.bind = vrb_domain_bind,
 	.control = fi_no_control,
 	.ops_open = fi_no_ops_open,
 };
 
-static struct fi_ops_domain fi_ibv_msg_domain_ops = {
+static struct fi_ops_domain vrb_msg_domain_ops = {
 	.size = sizeof(struct fi_ops_domain),
 	.av_open = fi_no_av_open,
-	.cq_open = fi_ibv_cq_open,
-	.endpoint = fi_ibv_open_ep,
+	.cq_open = vrb_cq_open,
+	.endpoint = vrb_open_ep,
 	.scalable_ep = fi_no_scalable_ep,
 	.cntr_open = fi_no_cntr_open,
 	.poll_open = fi_no_poll_open,
 	.stx_ctx = fi_no_stx_context,
-	.srx_ctx = fi_ibv_srq_context,
-	.query_atomic = fi_ibv_query_atomic,
+	.srx_ctx = vrb_srq_context,
+	.query_atomic = vrb_query_atomic,
+	.query_collective = fi_no_query_collective,
 };
 
-static struct fi_ops_domain fi_ibv_dgram_domain_ops = {
+static struct fi_ops_domain vrb_dgram_domain_ops = {
 	.size = sizeof(struct fi_ops_domain),
-	.av_open = fi_ibv_dgram_av_open,
-	.cq_open = fi_ibv_cq_open,
-	.endpoint = fi_ibv_open_ep,
+	.av_open = vrb_dgram_av_open,
+	.cq_open = vrb_cq_open,
+	.endpoint = vrb_open_ep,
 	.scalable_ep = fi_no_scalable_ep,
 	.poll_open = fi_no_poll_open,
 	.stx_ctx = fi_no_stx_context,
 	.srx_ctx = fi_no_srx_context,
 	.query_atomic = fi_no_query_atomic,
+	.query_collective = fi_no_query_collective,
 };
 
-static void fi_ibv_domain_process_exp(struct fi_ibv_domain *domain)
-{
-#ifdef HAVE_VERBS_EXP_H
-	struct ibv_exp_device_attr exp_attr= {
-		.comp_mask = IBV_EXP_DEVICE_ATTR_ODP |
-			     IBV_EXP_DEVICE_ATTR_EXP_CAP_FLAGS,
-	};
-	domain->use_odp = (!ibv_exp_query_device(domain->verbs, &exp_attr) &&
-			   exp_attr.exp_device_cap_flags & IBV_EXP_DEVICE_ODP);
-#else /* HAVE_VERBS_EXP_H */
-	domain->use_odp = 0;
-#endif /* HAVE_VERBS_EXP_H */
-	if (!domain->use_odp && fi_ibv_gl_data.use_odp) {
-		VERBS_WARN(FI_LOG_CORE,
-			   "ODP is not supported on this configuration, ignore \n");
-		return;
-	}
-	domain->use_odp = fi_ibv_gl_data.use_odp;
-}
 
 static int
-fi_ibv_domain(struct fid_fabric *fabric, struct fi_info *info,
+vrb_domain(struct fid_fabric *fabric, struct fi_info *info,
 	      struct fid_domain **domain, void *context)
 {
-	struct fi_ibv_domain *_domain;
+	struct vrb_domain *_domain;
 	int ret;
-	struct fi_ibv_fabric *fab =
-		 container_of(fabric, struct fi_ibv_fabric,
+	struct vrb_fabric *fab =
+		 container_of(fabric, struct vrb_fabric,
 			      util_fabric.fabric_fid);
-	const struct fi_info *fi = fi_ibv_get_verbs_info(fi_ibv_util_prov.info,
+	const struct fi_info *fi = vrb_get_verbs_info(vrb_util_prov.info,
 							 info->domain_attr->name);
 	if (!fi)
 		return -FI_EINVAL;
 
-	ret = ofi_check_domain_attr(&fi_ibv_prov, fabric->api_version,
+	ret = ofi_check_domain_attr(&vrb_prov, fabric->api_version,
 				    fi->domain_attr, info);
 	if (ret)
 		return ret;
@@ -416,10 +252,10 @@ fi_ibv_domain(struct fid_fabric *fabric, struct fi_info *info,
 	if (!_domain->info)
 		goto err2;
 
-	_domain->ep_type = FI_IBV_EP_TYPE(info);
-	_domain->use_xrc = fi_ibv_is_xrc(info);
+	_domain->ep_type = VRB_EP_TYPE(info);
+	_domain->flags |= vrb_is_xrc(info) ? VRB_USE_XRC : 0;
 
-	ret = fi_ibv_open_device_by_name(_domain, info->domain_attr->name);
+	ret = vrb_open_device_by_name(_domain, info->domain_attr->name);
 	if (ret)
 		goto err3;
 
@@ -429,79 +265,59 @@ fi_ibv_domain(struct fid_fabric *fabric, struct fi_info *info,
 		goto err3;
 	}
 
+	_domain->flags |= vrb_odp_flag(_domain->verbs);
 	_domain->util_domain.domain_fid.fid.fclass = FI_CLASS_DOMAIN;
 	_domain->util_domain.domain_fid.fid.context = context;
-	_domain->util_domain.domain_fid.fid.ops = &fi_ibv_fid_ops;
+	_domain->util_domain.domain_fid.fid.ops = &vrb_fid_ops;
 
-	fi_ibv_domain_process_exp(_domain);
-
-	if (fi_ibv_gl_data.mr_cache_enable) {
-		_domain->notifier = fi_ibv_mem_notifier_init();
-		_domain->monitor.subscribe = fi_ibv_monitor_subscribe;
-		_domain->monitor.unsubscribe = fi_ibv_monitor_unsubscribe;
-		ofi_monitor_init(&_domain->monitor);
-
-		_domain->cache.max_cached_cnt = fi_ibv_gl_data.mr_max_cached_cnt;
-		_domain->cache.max_cached_size = fi_ibv_gl_data.mr_max_cached_size;
-		_domain->cache.merge_regions = fi_ibv_gl_data.mr_cache_merge_regions;
-		_domain->cache.entry_data_size = sizeof(struct fi_ibv_mem_desc);
-		_domain->cache.add_region = fi_ibv_mr_cache_entry_reg;
-		_domain->cache.delete_region = fi_ibv_mr_cache_entry_dereg;
-		ret = ofi_mr_cache_init(&_domain->util_domain, &_domain->monitor,
-					&_domain->cache);
-		if (ret)
-			goto err4;
-		_domain->util_domain.domain_fid.mr = fi_ibv_mr_internal_cache_ops.fi_ops;
-		_domain->internal_mr_reg = fi_ibv_mr_internal_cache_ops.internal_mr_reg;
-		_domain->internal_mr_dereg = fi_ibv_mr_internal_cache_ops.internal_mr_dereg;
-	} else {
-		_domain->util_domain.domain_fid.mr = fi_ibv_mr_internal_ops.fi_ops;
-		_domain->internal_mr_reg = fi_ibv_mr_internal_ops.internal_mr_reg;
-		_domain->internal_mr_dereg = fi_ibv_mr_internal_ops.internal_mr_dereg;
-	}
+	_domain->cache.entry_data_size = sizeof(struct vrb_mem_desc);
+	_domain->cache.add_region = vrb_mr_cache_add_region;
+	_domain->cache.delete_region = vrb_mr_cache_delete_region;
+	ret = ofi_mr_cache_init(&_domain->util_domain, default_monitor,
+				&_domain->cache);
+	if (!ret)
+		_domain->util_domain.domain_fid.mr = &vrb_mr_cache_ops;
+	else
+		_domain->util_domain.domain_fid.mr = &vrb_mr_ops;
 
 	switch (_domain->ep_type) {
 	case FI_EP_DGRAM:
-		if (fi_ibv_gl_data.dgram.use_name_server) {
+		if (vrb_gl_data.dgram.use_name_server) {
 			/* Even if it's invoked not for the first time
 			 * (e.g. multiple domains per fabric), it's safe
 			 */
 			fab->name_server.port =
-					fi_ibv_gl_data.dgram.name_server_port;
+					vrb_gl_data.dgram.name_server_port;
 			fab->name_server.name_len = sizeof(struct ofi_ib_ud_ep_name);
 			fab->name_server.service_len = sizeof(int);
-			fab->name_server.service_cmp = fi_ibv_dgram_ns_service_cmp;
+			fab->name_server.service_cmp = vrb_dgram_ns_service_cmp;
 			fab->name_server.is_service_wildcard =
-					fi_ibv_dgram_ns_is_service_wildcard;
+					vrb_dgram_ns_is_service_wildcard;
 
 			ofi_ns_init(&fab->name_server);
 			ofi_ns_start_server(&fab->name_server);
 		}
-		_domain->util_domain.domain_fid.ops = &fi_ibv_dgram_domain_ops;
+		_domain->util_domain.domain_fid.ops = &vrb_dgram_domain_ops;
 		break;
 	case FI_EP_MSG:
-		if (_domain->use_xrc) {
-			ret = fi_ibv_domain_xrc_init(_domain);
+		if (_domain->flags & VRB_USE_XRC) {
+			ret = vrb_domain_xrc_init(_domain);
 			if (ret)
-				goto err5;
+				goto err4;
 		}
-		_domain->util_domain.domain_fid.ops = &fi_ibv_msg_domain_ops;
+		_domain->util_domain.domain_fid.ops = &vrb_msg_domain_ops;
 		break;
 	default:
 		VERBS_INFO(FI_LOG_DOMAIN, "Ivalid EP type is provided, "
 			   "EP type :%d\n", _domain->ep_type);
 		ret = -FI_EINVAL;
-		goto err3;
+		goto err4;
 	}
 
 	*domain = &_domain->util_domain.domain_fid;
 	return FI_SUCCESS;
-err5:
-	if (fi_ibv_gl_data.mr_cache_enable)
-		ofi_mr_cache_cleanup(&_domain->cache);
 err4:
-	if (fi_ibv_gl_data.mr_cache_enable)
-		ofi_monitor_cleanup(&_domain->monitor);
+	ofi_mr_cache_cleanup(&_domain->cache);
 	if (ibv_dealloc_pd(_domain->pd))
 		VERBS_INFO_ERRNO(FI_LOG_DOMAIN,
 				 "ibv_dealloc_pd", errno);
@@ -516,23 +332,26 @@ err1:
 	return ret;
 }
 
-static int fi_ibv_trywait(struct fid_fabric *fabric, struct fid **fids, int count)
+static int vrb_trywait(struct fid_fabric *fabric, struct fid **fids, int count)
 {
-	struct fi_ibv_cq *cq;
+	struct vrb_cq *cq;
+	struct vrb_eq *eq;
 	int ret, i;
 
 	for (i = 0; i < count; i++) {
 		switch (fids[i]->fclass) {
 		case FI_CLASS_CQ:
-			cq = container_of(fids[i], struct fi_ibv_cq, util_cq.cq_fid.fid);
-			ret = cq->trywait(fids[i]);
+			cq = container_of(fids[i], struct vrb_cq, util_cq.cq_fid.fid);
+			ret = vrb_cq_trywait(cq);
 			if (ret)
 				return ret;
 			break;
 		case FI_CLASS_EQ:
-			/* We are always ready to wait on an EQ since
-			 * rdmacm EQ is based on an fd */
-			continue;
+			eq = container_of(fids[i], struct vrb_eq, eq_fid.fid);
+			ret = vrb_eq_trywait(eq);
+			if (ret)
+				return ret;
+			break;
 		case FI_CLASS_CNTR:
 		case FI_CLASS_WAIT:
 			return -FI_ENOSYS;
@@ -544,12 +363,12 @@ static int fi_ibv_trywait(struct fid_fabric *fabric, struct fid **fids, int coun
 	return FI_SUCCESS;
 }
 
-static int fi_ibv_fabric_close(fid_t fid)
+static int vrb_fabric_close(fid_t fid)
 {
-	struct fi_ibv_fabric *fab;
+	struct vrb_fabric *fab;
 	int ret;
 
-	fab = container_of(fid, struct fi_ibv_fabric, util_fabric.fabric_fid.fid);
+	fab = container_of(fid, struct vrb_fabric, util_fabric.fabric_fid.fid);
 	ret = ofi_fabric_close(&fab->util_fabric);
 	if (ret)
 		return ret;
@@ -558,28 +377,28 @@ static int fi_ibv_fabric_close(fid_t fid)
 	return 0;
 }
 
-static struct fi_ops fi_ibv_fi_ops = {
+static struct fi_ops vrb_fi_ops = {
 	.size = sizeof(struct fi_ops),
-	.close = fi_ibv_fabric_close,
+	.close = vrb_fabric_close,
 	.bind = fi_no_bind,
 	.control = fi_no_control,
 	.ops_open = fi_no_ops_open,
 };
 
-static struct fi_ops_fabric fi_ibv_ops_fabric = {
+static struct fi_ops_fabric vrb_ops_fabric = {
 	.size = sizeof(struct fi_ops_fabric),
-	.domain = fi_ibv_domain,
-	.passive_ep = fi_ibv_passive_ep,
-	.eq_open = fi_ibv_eq_open,
+	.domain = vrb_domain,
+	.passive_ep = vrb_passive_ep,
+	.eq_open = vrb_eq_open,
 	.wait_open = fi_no_wait_open,
-	.trywait = fi_ibv_trywait
+	.trywait = vrb_trywait
 };
 
-int fi_ibv_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
+int vrb_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 		  void *context)
 {
-	struct fi_ibv_fabric *fab;
-	const struct fi_info *cur, *info = fi_ibv_util_prov.info;
+	struct vrb_fabric *fab;
+	const struct fi_info *cur, *info = vrb_util_prov.info;
 	int ret = FI_SUCCESS;
 
 	fab = calloc(1, sizeof(*fab));
@@ -587,7 +406,7 @@ int fi_ibv_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 		return -FI_ENOMEM;
 
 	for (cur = info; cur; cur = info->next) {
-		ret = ofi_fabric_init(&fi_ibv_prov, cur->fabric_attr, attr,
+		ret = ofi_fabric_init(&vrb_prov, cur->fabric_attr, attr,
 				      &fab->util_fabric, context);
 		if (ret != -FI_ENODATA)
 			break;
@@ -601,8 +420,8 @@ int fi_ibv_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 
 	*fabric = &fab->util_fabric.fabric_fid;
 	(*fabric)->fid.fclass = FI_CLASS_FABRIC;
-	(*fabric)->fid.ops = &fi_ibv_fi_ops;
-	(*fabric)->ops = &fi_ibv_ops_fabric;
+	(*fabric)->fid.ops = &vrb_fi_ops;
+	(*fabric)->ops = &vrb_ops_fabric;
 
 	return 0;
 }

@@ -43,21 +43,30 @@
 #define RXD_IOV_LIMIT		4
 #define RXD_NAME_LENGTH		64
 
+/* Values below are part of the wire protocol
+   Reserved values are unused but defined for compatibility */
+#define RXD_FOREACH_TYPE(FUNC)		\
+	FUNC(RXD_MSG),			\
+	FUNC(RXD_TAGGED),		\
+	FUNC(RXD_READ_REQ),		\
+	FUNC(RXD_RESV_1),		\
+	FUNC(RXD_WRITE),		\
+	FUNC(RXD_RESV_2),		\
+	FUNC(RXD_ATOMIC),		\
+	FUNC(RXD_ATOMIC_FETCH),		\
+	FUNC(RXD_ATOMIC_COMPARE),	\
+	FUNC(RXD_RTS),			\
+	FUNC(RXD_CTS),			\
+	FUNC(RXD_ACK),			\
+	FUNC(RXD_DATA),			\
+	FUNC(RXD_DATA_READ),		\
+	FUNC(RXD_NO_OP)
+
 enum rxd_pkt_type {
-	RXD_MSG			= ofi_op_msg,
-	RXD_TAGGED		= ofi_op_tagged,
-	RXD_READ_REQ		= ofi_op_read_req,
-	RXD_WRITE		= ofi_op_write,
-	RXD_ATOMIC		= ofi_op_atomic,
-	RXD_ATOMIC_FETCH	= ofi_op_atomic_fetch,
-	RXD_ATOMIC_COMPARE	= ofi_op_atomic_compare,
-	RXD_RTS,
-	RXD_CTS,
-	RXD_ACK,
-	RXD_DATA,
-	RXD_DATA_READ,
-	RXD_NO_OP,
+	RXD_FOREACH_TYPE(OFI_ENUM_VAL)
 };
+
+extern char *rxd_pkt_type_str[];
 
 /* Base header: all packets must start with base_hdr
  * 	- version: RXD version the app is using
@@ -134,12 +143,12 @@ struct rxd_data_pkt {
  * The op header order is as follows:
  * base_hdr (present for all packets)
  *
- * sar_hdr: for all messages requiring more than one packet
- * 	- lack of the sar_hdr is signaled by base_hdr->flags & RXD_INLINE
  * tag_hdr: for all tagged messages
  * 	- signaled by base_hdr->flags & RXD_TAG_HDR
  * data_hdr: for messages carrying remote CQ data
  * 	- signaled by base_hdr->flags & RXD_REMOTE_CQ_DATA
+ * sar_hdr: for all messages requiring more than one packet
+ * 	- lack of the sar_hdr is signaled by base_hdr->flags & RXD_INLINE
  * rma_hdr: for FI_RMA and FI_ATOMIC operations
  * 	- signaled by base_hdr->type = RXD_READ_REQ, RXD_WRITE, RXD_ATOMIC,
  * 	  RXD_ATOMIC_FETCH, and RXD_ATOMIC_COMPARE

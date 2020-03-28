@@ -38,76 +38,12 @@
 #define FT_CAP_RMA	FI_RMA | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE
 #define FT_CAP_ATOMIC	FI_ATOMICS | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE
 
-#define FT_MODE_ALL	FI_CONTEXT | FI_LOCAL_MR /*| FI_MSG_PREFIX*/
-#define FT_MODE_NONE	~0ULL
 
 struct key_t {
 	char *str;
 	size_t offset;
 	enum { VAL_STRING, VAL_NUM } val_type;
 	int val_size;
-};
-
-static struct ft_set test_sets_default[] = {
-	{
-		.prov_name = "sockets",
-		.test_type = {
-			FT_TEST_LATENCY,
-			FT_TEST_BANDWIDTH
-		},
-		.class_function = {
-			FT_FUNC_SEND,
-			FT_FUNC_SENDV,
-			FT_FUNC_SENDMSG
-		},
-		.ep_type = {
-			FI_EP_MSG,
-			FI_EP_DGRAM,
-			FI_EP_RDM
-		},
-		.av_type = {
-			FI_AV_TABLE,
-			FI_AV_MAP
-		},
-		.comp_type = {
-			FT_COMP_QUEUE
-		},
-		.mode = {
-			FT_MODE_ALL
-		},
-		.test_class = {
-			FT_CAP_MSG,
-			FT_CAP_TAGGED,
-//			FT_CAP_RMA,
-//			FT_CAP_ATOMIC
-		},
-		.test_flags = FT_FLAG_QUICKTEST
-	},
-	{
-		.prov_name = "verbs",
-		.test_type = {
-			FT_TEST_LATENCY,
-			FT_TEST_BANDWIDTH
-		},
-		.class_function = {
-			FT_FUNC_SEND,
-			FT_FUNC_SENDV,
-			FT_FUNC_SENDMSG
-		},
-		.ep_type = {
-			FI_EP_MSG,
-		},
-		.comp_type = {
-			FT_COMP_QUEUE
-		},
-		.mode = {
-			FT_MODE_ALL
-		},
-		.test_class = {
-			FT_CAP_MSG,
-		},
-		.test_flags = FT_FLAG_QUICKTEST
-	},
 };
 
 static struct ft_series test_series;
@@ -304,7 +240,13 @@ static struct key_t keys[] = {
 		.offset = offsetof(struct ft_set, progress),
 		.val_type = VAL_NUM,
 		.val_size = sizeof(((struct ft_set *)0)->progress) / FT_MAX_PROGRESS,
-	}
+	},
+	{
+		.str = "threading",
+		.offset = offsetof(struct ft_set, threading),
+		.val_type = VAL_NUM,
+		.val_size = sizeof(((struct ft_set *)0)->threading) / FT_MAX_THREADING,
+	},
 };
 
 static int ft_parse_num(char *str, int len, struct key_t *key, void *buf)
@@ -416,10 +358,18 @@ static int ft_parse_num(char *str, int len, struct key_t *key, void *buf)
 		TEST_ENUM_SET_N_RETURN(str, len, FI_MR_PROV_KEY, uint64_t, buf);
 		FT_ERR("Unknown MR mode");
 	} else if (!strncmp(key->str, "progress", strlen("progress"))) {
-		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_MANUAL, uint64_t, buf);
-		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_AUTO, uint64_t, buf);
-		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_UNSPEC, uint64_t, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_MANUAL, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_AUTO, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_PROGRESS_UNSPEC, int, buf);
 		FT_ERR("Unknown progress mode");
+	} else if (!strncmp(key->str, "threading", strlen("threading"))) {
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_UNSPEC, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_SAFE, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_FID, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_DOMAIN, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_COMPLETION, int, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_THREAD_ENDPOINT, int, buf);
+		FT_ERR("Unknown threading level");
 	} else if (!strncmp(key->str, "constant_caps", strlen("constant_caps"))) {
 		TEST_ENUM_SET_N_RETURN(str, len, FI_RMA, uint64_t, buf);
 		TEST_ENUM_SET_N_RETURN(str, len, FI_MSG, uint64_t, buf);
@@ -444,14 +394,19 @@ static int ft_parse_num(char *str, int len, struct key_t *key, void *buf)
 	} else if (!strncmp(key->str, "tx_op_flags", strlen("tx_op_flags"))) {
 		TEST_ENUM_SET_N_RETURN(str, len, FI_COMPLETION, uint64_t, buf);
 		FT_ERR("Unknown tx_op_flags");
-	} else {
+	} else if (!strncmp(key->str, "comp_type", strlen("comp_type"))) {
 		TEST_ENUM_SET_N_RETURN(str, len, FT_COMP_QUEUE, enum ft_comp_type, buf);
 		TEST_ENUM_SET_N_RETURN(str, len, FT_COMP_CNTR, enum ft_comp_type, buf);
 		TEST_ENUM_SET_N_RETURN(str, len, FT_COMP_ALL, enum ft_comp_type, buf);
-		TEST_SET_N_RETURN(str, len, "FT_MODE_ALL", FT_MODE_ALL, uint64_t, buf);
-		TEST_SET_N_RETURN(str, len, "FT_MODE_NONE", FT_MODE_NONE, uint64_t, buf);
+		FT_ERR("Unknown comp_type");
+	} else if (!strncmp(key->str, "mode", strlen("mode"))) {
+		TEST_ENUM_SET_N_RETURN(str, len, FI_CONTEXT, uint64_t, buf);
+		TEST_ENUM_SET_N_RETURN(str, len, FI_RX_CQ_DATA, uint64_t, buf);
+		FT_ERR("Unsupported mode bit");
+	} else if (!strncmp(key->str, "test_flags", strlen("test_flags"))) {
 		TEST_SET_N_RETURN(str, len, "FT_FLAG_QUICKTEST", FT_FLAG_QUICKTEST, uint64_t, buf);
-		FT_ERR("Unknown comp_type/mode/test_flags");
+	} else {
+		FT_ERR("Unknown test configuration key");
 	}
 
 	return -1;
@@ -668,9 +623,8 @@ struct ft_series *fts_load(char *filename)
 		free(config);
 		fclose(fp);
 	} else {
-		printf("No config file given. Using default tests.\n");
-		test_series.sets = test_sets_default;
-		test_series.nsets = sizeof(test_sets_default) / sizeof(test_sets_default[0]);
+		printf("Test config file required.\n");
+		exit(1);
 	}
 
 	for (fts_start(&test_series, 0); !fts_end(&test_series, 0);
@@ -690,8 +644,7 @@ err1:
 
 void fts_close(struct ft_series *series)
 {
-	if (series->sets != test_sets_default)
-		free(series->sets);
+	free(series->sets);
 }
 
 void fts_start(struct ft_series *series, int index)
@@ -707,6 +660,7 @@ void fts_start(struct ft_series *series, int index)
 	series->cur_mode = 0;
 	series->cur_class = 0;
 	series->cur_progress = 0;
+	series->cur_threading = 0;
 
 	series->test_index = 1;
 	if (index > 1) {
@@ -720,10 +674,18 @@ int fts_info_is_valid(void)
 	if (test_info.msg_flags && !is_msg_func(test_info.class_function))
 		return 0;
 
-	if (test_info.rx_cq_bind_flags & FI_SELECTIVE_COMPLETION &&
-	    !(test_info.rx_op_flags & FI_COMPLETION) &&
-	    !(test_info.msg_flags & FI_COMPLETION))
-		return 0;
+	if (test_info.rx_cq_bind_flags & FI_SELECTIVE_COMPLETION) {
+		if (!(test_info.rx_op_flags & FI_COMPLETION) &&
+		    !(test_info.msg_flags & FI_COMPLETION))
+			return 0;
+
+		/* Skip RX selective completion if not using a counter
+		 * - Hard to test (because of needed sync messages)
+		 * - Not intended use case for FI_SELECTIVE_COMPLETION
+		 */
+		if (!ft_use_comp_cntr(test_info.comp_type))
+			return 0;
+	}
 
 	if (test_info.test_class & (FI_MSG | FI_TAGGED) &&
 	    !ft_check_rx_completion(test_info) &&
@@ -797,9 +759,13 @@ void fts_next(struct ft_series *series)
 		return;
 	series->cur_type = 0;
 
-	if (set->test_class[++series->cur_progress])
+	if (set->progress[++series->cur_progress])
 		return;
 	series->cur_progress = 0;
+
+	if (set->threading[++series->cur_threading])
+		return;
+	series->cur_threading = 0;
 
 	series->cur_set++;
 }
@@ -829,6 +795,7 @@ void fts_cur_info(struct ft_series *series, struct ft_info *info)
 	info->test_flags = set->test_flags;
 	info->test_class = set->test_class[series->cur_class];
 	info->progress = set->progress[series->cur_progress];
+	info->threading = set->threading[series->cur_threading];
 
 	if (info->test_class) {
 		info->caps = set->test_class[series->cur_class];
@@ -866,9 +833,11 @@ void fts_cur_info(struct ft_series *series, struct ft_info *info)
 		while (set->tx_op_flags[i])
 			info->tx_op_flags |= set->tx_op_flags[i++];
 	}
-
-	info->mode = (set->mode[series->cur_mode] == FT_MODE_NONE) ?
-			0 : set->mode[series->cur_mode];
+	if (set->mode[0]) {
+		i = 0;
+		while (set->mode[i])
+			info->mode |= set->mode[i++];
+	}
 
 	info->ep_type = set->ep_type[series->cur_ep];
 	info->av_type = set->av_type[series->cur_av];

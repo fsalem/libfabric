@@ -36,8 +36,9 @@
 #include <shared/ofi_str.h>
 #include <ofi_util.h>
 
-#define OFI_MSG_CAPS	(FI_SEND | FI_RECV)
-#define OFI_RMA_CAPS	(FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
+#define OFI_MSG_DIRECTION_CAPS	(FI_SEND | FI_RECV)
+#define OFI_RMA_DIRECTION_CAPS	(FI_READ | FI_WRITE | \
+				 FI_REMOTE_READ | FI_REMOTE_WRITE)
 
 static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 {
@@ -520,13 +521,6 @@ int ofi_check_domain_attr(const struct fi_provider *prov, uint32_t api_version,
 {
 	const struct fi_domain_attr *user_attr = user_info->domain_attr;
 
-	if (prov_attr->name && user_attr->name &&
-	    strcasecmp(user_attr->name, prov_attr->name)) {
-		FI_INFO(prov, FI_LOG_CORE, "Unknown domain name\n");
-		FI_INFO_NAME(prov, prov_attr, user_attr);
-		return -FI_ENODATA;
-	}
-
 	if (fi_thread_level(user_attr->threading) <
 	    fi_thread_level(prov_attr->threading)) {
 		FI_INFO(prov, FI_LOG_CORE, "Invalid threading model\n");
@@ -619,14 +613,14 @@ int ofi_check_domain_attr(const struct fi_provider *prov, uint32_t api_version,
 	return 0;
 }
 
-static int ofi_check_ep_type(const struct fi_provider *prov,
-			     const struct fi_ep_attr *prov_attr,
-			     const struct fi_ep_attr *user_attr)
+int ofi_check_ep_type(const struct fi_provider *prov,
+		      const struct fi_ep_attr *prov_attr,
+		      const struct fi_ep_attr *user_attr)
 {
 	if ((user_attr->type != FI_EP_UNSPEC) &&
 	    (prov_attr->type != FI_EP_UNSPEC) &&
 	    (user_attr->type != prov_attr->type)) {
-		FI_INFO(prov, FI_LOG_CORE, "Unsupported endpoint type\n");
+		FI_INFO(prov, FI_LOG_CORE, "unsupported endpoint type\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, type, FI_TYPE_EP_TYPE);
 		return -FI_ENODATA;
 	}
@@ -745,7 +739,10 @@ int ofi_check_rx_attr(const struct fi_provider *prov,
 	const struct fi_rx_attr *prov_attr = prov_info->rx_attr;
 	int rm_enabled = (prov_info->domain_attr->resource_mgmt == FI_RM_ENABLED);
 
-	if (user_attr->caps & ~(prov_attr->caps)) {
+	if (user_attr->caps & ~OFI_IGNORED_RX_CAPS)
+		FI_INFO(prov, FI_LOG_CORE, "Tx only caps ignored in Rx caps\n");
+
+	if ((user_attr->caps & ~OFI_IGNORED_RX_CAPS) & ~(prov_attr->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "caps not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, caps, FI_TYPE_CAPS);
 		return -FI_ENODATA;
@@ -758,7 +755,7 @@ int ofi_check_rx_attr(const struct fi_provider *prov,
 		return -FI_ENODATA;
 	}
 
-	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
+	if (user_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, op_flags,
 			     FI_TYPE_OP_FLAGS);
@@ -810,34 +807,26 @@ int ofi_check_rx_attr(const struct fi_provider *prov,
 	return 0;
 }
 
-static uint64_t ofi_expand_caps(uint64_t base_caps)
-{
-	uint64_t expanded_caps = base_caps;
-	uint64_t msg_caps = FI_SEND | FI_RECV;
-	uint64_t rma_caps = FI_WRITE | FI_READ | FI_REMOTE_WRITE | FI_REMOTE_READ;
-
-	if (base_caps & (FI_MSG | FI_TAGGED))
-		if (!(base_caps & msg_caps))
-			expanded_caps |= msg_caps;
-
-	if (base_caps & (FI_RMA | FI_ATOMIC))
-		if (!(base_caps & rma_caps))
-			expanded_caps |= rma_caps;
-
-	return expanded_caps;
-}
-
 int ofi_check_attr_subset(const struct fi_provider *prov,
 		uint64_t base_caps, uint64_t requested_caps)
 {
-	uint64_t expanded_base_caps;
+	uint64_t expanded_caps;
 
-	expanded_base_caps = ofi_expand_caps(base_caps);
+	expanded_caps = base_caps;
+	if (base_caps & (FI_MSG | FI_TAGGED)) {
+		if (!(base_caps & OFI_MSG_DIRECTION_CAPS))
+			expanded_caps |= OFI_MSG_DIRECTION_CAPS;
+	}
+	if (base_caps & (FI_RMA | FI_ATOMIC)) {
+		if (!(base_caps & OFI_RMA_DIRECTION_CAPS))
+			expanded_caps |= OFI_RMA_DIRECTION_CAPS;
+	}
 
-	if (~expanded_base_caps & requested_caps) {
-		FI_INFO(prov, FI_LOG_CORE, "requested caps not subset of base endpoint caps\n");
-		FI_INFO_FIELD(prov, expanded_base_caps, requested_caps, "Supported",
-				"Requested", FI_TYPE_CAPS);
+	if (~expanded_caps & requested_caps) {
+		FI_INFO(prov, FI_LOG_CORE,
+			"requested caps not subset of base endpoint caps\n");
+		FI_INFO_FIELD(prov, expanded_caps, requested_caps,
+			"Supported", "Requested", FI_TYPE_CAPS);
 		return -FI_ENODATA;
 	}
 
@@ -848,7 +837,10 @@ int ofi_check_tx_attr(const struct fi_provider *prov,
 		      const struct fi_tx_attr *prov_attr,
 		      const struct fi_tx_attr *user_attr, uint64_t info_mode)
 {
-	if (user_attr->caps & ~(prov_attr->caps)) {
+	if (user_attr->caps & ~OFI_IGNORED_TX_CAPS)
+		FI_INFO(prov, FI_LOG_CORE, "Rx only caps ignored in Tx caps\n");
+
+	if ((user_attr->caps & ~OFI_IGNORED_TX_CAPS) & ~(prov_attr->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "caps not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, caps, FI_TYPE_CAPS);
 		return -FI_ENODATA;
@@ -861,7 +853,7 @@ int ofi_check_tx_attr(const struct fi_provider *prov,
 		return -FI_ENODATA;
 	}
 
-	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
+	if (user_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, op_flags,
 			     FI_TYPE_OP_FLAGS);
@@ -909,7 +901,7 @@ int ofi_check_tx_attr(const struct fi_provider *prov,
 	return 0;
 }
 
-/* if there are multiple fi_info in the provider:
+/* Use if there are multiple fi_info in the provider:
  * check provider's info */
 int ofi_prov_check_info(const struct util_prov *util_prov,
 			uint32_t api_version,
@@ -932,7 +924,7 @@ int ofi_prov_check_info(const struct util_prov *util_prov,
 	return (!success_info ? -FI_ENODATA : FI_SUCCESS);
 }
 
-/* if there are multiple fi_info in the provider:
+/* Use if there are multiple fi_info in the provider:
  * check and duplicate provider's info */
 int ofi_prov_check_dup_info(const struct util_prov *util_prov,
 			    uint32_t api_version,
@@ -965,7 +957,7 @@ int ofi_prov_check_dup_info(const struct util_prov *util_prov,
 		tail = fi;
 	}
 
-	return (!*info ? -FI_ENODATA : FI_SUCCESS);
+	return !*info ? -FI_ENODATA : FI_SUCCESS;
 err:
 	fi_freeinfo(*info);
 	FI_INFO(prov, FI_LOG_CORE,
@@ -973,7 +965,7 @@ err:
 	return ret;
 }
 
-/* if there is only single fi_info in the provider */
+/* Use if there is only single fi_info in the provider */
 int ofi_check_info(const struct util_prov *util_prov,
 		   const struct fi_info *prov_info, uint32_t api_version,
 		   const struct fi_info *user_info)
@@ -1067,10 +1059,10 @@ static uint64_t ofi_get_caps(uint64_t info_caps, uint64_t hint_caps,
 		       (attr_caps & FI_SECONDARY_CAPS);
 	}
 
-	if (caps & (FI_MSG | FI_TAGGED) && !(caps & OFI_MSG_CAPS))
-		caps |= OFI_MSG_CAPS;
-	if (caps & (FI_RMA | FI_ATOMICS) && !(caps & OFI_RMA_CAPS))
-		caps |= OFI_RMA_CAPS;
+	if (caps & (FI_MSG | FI_TAGGED) && !(caps & OFI_MSG_DIRECTION_CAPS))
+		caps |= (attr_caps & OFI_MSG_DIRECTION_CAPS);
+	if (caps & (FI_RMA | FI_ATOMICS) && !(caps & OFI_RMA_DIRECTION_CAPS))
+		caps |= (attr_caps & OFI_RMA_DIRECTION_CAPS);
 
 	return caps;
 }

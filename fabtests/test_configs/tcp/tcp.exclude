@@ -1,6 +1,7 @@
 # Regex patterns of tests to exclude in runfabtests.sh
 
-^dgram| -e dgram
+^fi_dgram
+-e dgram
 
 rdm_rma_simple
 rdm_rma_trigger
@@ -11,9 +12,9 @@ multi_mr
 atomic
 inj_complete -e msg
 unexpected_msg -e msg
+multi_recv
 
 # TODO. Following fails with macOS. will fix them later
 cq_data -e rdm
 rdm_tagged_peek
 unexpected_msg -e rdm
-rdm_cntr_pingpong

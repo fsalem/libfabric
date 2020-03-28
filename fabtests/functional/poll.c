@@ -86,6 +86,39 @@ err:
 	return ret;
 }
 
+static int free_poll_res(void)
+{
+	int ret;
+
+	if (txcq) {
+		ret = fi_poll_del(pollset, &txcq->fid, 0);
+		if (ret)
+			goto err;
+	}
+
+	if (rxcq) {
+		ret = fi_poll_del(pollset, &rxcq->fid, 0);
+		if (ret)
+			goto err;
+	}
+
+	if (txcntr) {
+		ret = fi_poll_del(pollset, &txcntr->fid, 0);
+		if (ret)
+			goto err;
+	}
+
+	if (rxcntr) {
+		ret = fi_poll_del(pollset, &rxcntr->fid, 0);
+		if (ret)
+			goto err;
+	}
+	return 0;
+err:
+	FT_PRINTERR("fi_poll_del", ret);
+	return ret;
+}
+
 static int init_fabric(void)
 {
 	int ret;
@@ -218,7 +251,7 @@ int main(int argc, char **argv)
 		switch (op) {
 		default:
 			ft_parse_addr_opts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			ft_parsecsopts(op, optarg, &opts);
 			break;
 		case '?':
@@ -235,10 +268,11 @@ int main(int argc, char **argv)
 	hints->ep_attr->type = FI_EP_RDM;
 	hints->caps = FI_MSG;
 	hints->mode = FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 
 	ret = run();
 
+	free_poll_res();
 	ft_free_res();
 	return ft_exit_code(ret);
 }

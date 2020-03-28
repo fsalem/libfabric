@@ -109,42 +109,11 @@
 #define SOCK_CM_DEF_RETRY (5)
 #define SOCK_CM_CONN_IN_PROGRESS ((struct sock_conn *)(0x1L))
 
-#define SOCK_EP_RDM_PRI_CAP (FI_MSG | FI_RMA | FI_TAGGED | FI_ATOMICS |	\
-			 FI_NAMED_RX_CTX | \
-			 FI_DIRECTED_RECV | \
-			 FI_READ | FI_WRITE | FI_RECV | FI_SEND | \
-			 FI_REMOTE_READ | FI_REMOTE_WRITE)
-
-#define SOCK_EP_RDM_SEC_CAP_BASE (FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
-				  FI_SHARED_AV | FI_FENCE | FI_TRIGGER)
-extern uint64_t SOCK_EP_RDM_SEC_CAP;
-
-#define SOCK_EP_RDM_CAP_BASE (SOCK_EP_RDM_PRI_CAP | SOCK_EP_RDM_SEC_CAP_BASE)
-extern uint64_t SOCK_EP_RDM_CAP;
-
-#define SOCK_EP_MSG_PRI_CAP SOCK_EP_RDM_PRI_CAP
-
-#define SOCK_EP_MSG_SEC_CAP_BASE SOCK_EP_RDM_SEC_CAP_BASE
-extern uint64_t SOCK_EP_MSG_SEC_CAP;
-
-#define SOCK_EP_MSG_CAP_BASE (SOCK_EP_MSG_PRI_CAP | SOCK_EP_MSG_SEC_CAP_BASE)
-extern uint64_t SOCK_EP_MSG_CAP;
-
-#define SOCK_EP_DGRAM_PRI_CAP (FI_MSG | FI_TAGGED | \
-			   FI_NAMED_RX_CTX | FI_DIRECTED_RECV | \
-			   FI_RECV | FI_SEND)
-
-#define SOCK_EP_DGRAM_SEC_CAP (FI_MULTI_RECV | FI_SOURCE | FI_SHARED_AV | \
-			   FI_FENCE | FI_TRIGGER)
-
-#define SOCK_EP_DGRAM_CAP (SOCK_EP_DGRAM_PRI_CAP | SOCK_EP_DGRAM_SEC_CAP)
-
-#define SOCK_EP_MSG_ORDER (FI_ORDER_RAR | FI_ORDER_RAW | FI_ORDER_RAS|	\
-			   FI_ORDER_WAR | FI_ORDER_WAW | FI_ORDER_WAS |	\
+#define SOCK_EP_MSG_ORDER (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | FI_ORDER_RAS| \
+			   OFI_ORDER_WAR_SET | OFI_ORDER_WAW_SET | FI_ORDER_WAS | \
 			   FI_ORDER_SAR | FI_ORDER_SAW | FI_ORDER_SAS)
 
 #define SOCK_EP_COMP_ORDER (FI_ORDER_STRICT | FI_ORDER_DATA)
-#define SOCK_EP_DEFAULT_OP_FLAGS (FI_TRANSMIT_COMPLETE)
 
 #define SOCK_EP_CQ_FLAGS (FI_SEND | FI_TRANSMIT | FI_RECV | \
 			FI_SELECTIVE_COMPLETION)
@@ -182,6 +151,24 @@ enum {
 
 #define SOCK_WIRE_PROTO_VERSION (2)
 
+extern struct fi_info sock_dgram_info;
+extern struct fi_info sock_msg_info;
+
+extern struct util_prov sock_util_prov;
+extern struct fi_domain_attr sock_domain_attr;
+extern struct fi_fabric_attr sock_fabric_attr;
+extern struct fi_tx_attr sock_msg_tx_attr;
+extern struct fi_tx_attr sock_rdm_tx_attr;
+extern struct fi_tx_attr sock_dgram_tx_attr;
+extern struct fi_rx_attr sock_msg_rx_attr;
+extern struct fi_rx_attr sock_rdm_rx_attr;
+extern struct fi_rx_attr sock_dgram_rx_attr;
+extern struct fi_ep_attr sock_msg_ep_attr;
+extern struct fi_ep_attr sock_rdm_ep_attr;
+extern struct fi_ep_attr sock_dgram_ep_attr;
+extern struct fi_tx_attr sock_stx_attr;
+extern struct fi_rx_attr sock_srx_attr;
+
 struct sock_service_entry {
 	int service;
 	struct dlist_entry entry;
@@ -212,7 +199,7 @@ struct sock_conn {
 
 struct sock_conn_map {
 	struct sock_conn *table;
-	fi_epoll_t epoll_set;
+	ofi_epoll_t epoll_set;
 	void **epoll_ctxs;
 	int epoll_ctxs_sz;
 	int used;
@@ -221,7 +208,7 @@ struct sock_conn_map {
 };
 
 struct sock_conn_listener {
-	fi_epoll_t emap;
+	ofi_epoll_t emap;
 	struct fd_signal signal;
 	fastlock_t signal_lock; /* acquire before map lock */
 	pthread_t listener_thread;
@@ -229,7 +216,7 @@ struct sock_conn_listener {
 };
 
 struct sock_ep_cm_head {
-	fi_epoll_t emap;
+	ofi_epoll_t emap;
 	struct fd_signal signal;
 	fastlock_t signal_lock;
 	pthread_t listener_thread;
@@ -377,6 +364,7 @@ struct sock_av {
 	int    shared;
 	struct dlist_entry ep_list;
 	fastlock_t list_lock;
+	fastlock_t table_lock;
 };
 
 struct sock_fid_list {
@@ -865,8 +853,8 @@ struct sock_pe {
 	int signal_fds[2];
 	uint64_t waittime;
 
-	struct util_buf_pool *pe_rx_pool;
-	struct util_buf_pool *atomic_rx_pool;
+	struct ofi_bufpool *pe_rx_pool;
+	struct ofi_bufpool *atomic_rx_pool;
 	struct dlist_entry free_list;
 	struct dlist_entry busy_list;
 	struct dlist_entry pool_list;
@@ -877,7 +865,7 @@ struct sock_pe {
 	pthread_t progress_thread;
 	volatile int do_progress;
 	struct sock_pe_entry *pe_atomic;
-	fi_epoll_t epoll_set;
+	ofi_epoll_t epoll_set;
 };
 
 typedef int (*sock_cq_report_fn) (struct sock_cq *cq, fi_addr_t addr,
@@ -962,12 +950,6 @@ struct sock_conn_req_handle {
 	char cm_data[SOCK_EP_MAX_CM_DATA_SZ];
 };
 
-struct sock_host_list_entry {
-	char ipstr[INET6_ADDRSTRLEN];
-	union ofi_sock_ip ipaddr;
-	struct slist_entry entry;
-};
-
 union sock_tx_op {
 	struct sock_msg {
 		struct sock_op_send op;
@@ -1005,20 +987,7 @@ union sock_tx_op {
 };
 #define SOCK_EP_TX_ENTRY_SZ (sizeof(union sock_tx_op))
 
-int sock_verify_info(uint32_t version, const struct fi_info *hints);
-int sock_verify_fabric_attr(const struct fi_fabric_attr *attr);
-int sock_verify_domain_attr(uint32_t version, const struct fi_info *info);
-
 size_t sock_get_tx_size(size_t size);
-int sock_rdm_verify_ep_attr(const struct fi_ep_attr *ep_attr,
-			    const struct fi_tx_attr *tx_attr,
-			    const struct fi_rx_attr *rx_attr);
-int sock_dgram_verify_ep_attr(const struct fi_ep_attr *ep_attr,
-			      const struct fi_tx_attr *tx_attr,
-			      const struct fi_rx_attr *rx_attr);
-int sock_msg_verify_ep_attr(const struct fi_ep_attr *ep_attr,
-			    const struct fi_tx_attr *tx_attr,
-			    const struct fi_rx_attr *rx_attr);
 int sock_get_src_addr(union ofi_sock_ip *dest_addr,
 		      union ofi_sock_ip *src_addr);
 int sock_get_src_addr_from_hostname(union ofi_sock_ip *src_addr,
@@ -1027,12 +996,6 @@ int sock_get_src_addr_from_hostname(union ofi_sock_ip *src_addr,
 struct fi_info *sock_fi_info(uint32_t version, enum fi_ep_type ep_type,
 			     const struct fi_info *hints, void *src_addr,
 			     void *dest_addr);
-int sock_msg_fi_info(uint32_t version, void *src_addr, void *dest_addr,
-		     const struct fi_info *hints, struct fi_info **info);
-int sock_dgram_fi_info(uint32_t version, void *src_addr, void *dest_addr,
-		       const struct fi_info *hints, struct fi_info **info);
-int sock_rdm_fi_info(uint32_t version, void *src_addr, void *dest_addr,
-		     const struct fi_info *hints, struct fi_info **info);
 void free_fi_info(struct fi_info *info);
 
 int sock_msg_getinfo(uint32_t version, const char *node, const char *service,

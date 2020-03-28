@@ -66,7 +66,9 @@ common_srcs =				\
 	prov/util/src/util_ns.c		\
 	prov/util/src/util_shm.c	\
 	prov/util/src/util_mem_monitor.c\
-	prov/util/src/util_mr_cache.c
+	prov/util/src/util_mem_hooks.c	\
+	prov/util/src/util_mr_cache.c	\
+	prov/util/src/util_coll.c
 
 
 if MACOS
@@ -125,6 +127,7 @@ src_libfabric_la_SOURCES =			\
 	include/ofi_indexer.h			\
 	include/ofi_iov.h			\
 	include/ofi_list.h			\
+	include/ofi_bitmask.h			\
 	include/shared/ofi_str.h		\
 	include/ofi_lock.h			\
 	include/ofi_mem.h			\
@@ -141,6 +144,7 @@ src_libfabric_la_SOURCES =			\
 	include/ofi_mr.h			\
 	include/ofi_net.h			\
 	include/ofi_perf.h			\
+	include/ofi_coll.h			\
 	include/fasthash.h			\
 	include/rbtree.h			\
 	include/uthash.h			\
@@ -171,7 +175,7 @@ src_libfabric_la_LIBADD =
 src_libfabric_la_DEPENDENCIES = libfabric.map
 
 if !EMBEDDED
-src_libfabric_la_LDFLAGS += -version-info 11:0:10
+src_libfabric_la_LDFLAGS += -version-info 13:0:12
 endif
 src_libfabric_la_LDFLAGS += -export-dynamic \
 			   $(libfabric_version_script)
@@ -179,6 +183,7 @@ rdmainclude_HEADERS += \
 	$(top_srcdir)/include/rdma/fabric.h \
 	$(top_srcdir)/include/rdma/fi_atomic.h \
 	$(top_srcdir)/include/rdma/fi_cm.h \
+	$(top_srcdir)/include/rdma/fi_collective.h \
 	$(top_srcdir)/include/rdma/fi_domain.h \
 	$(top_srcdir)/include/rdma/fi_eq.h \
 	$(top_srcdir)/include/rdma/fi_rma.h \
@@ -210,8 +215,10 @@ real_man_pages = \
         man/man1/fi_pingpong.1 \
         man/man1/fi_strerror.1 \
         man/man3/fi_av.3 \
+        man/man3/fi_av_set.3 \
         man/man3/fi_cm.3 \
         man/man3/fi_cntr.3 \
+        man/man3/fi_collective.3 \
         man/man3/fi_control.3 \
         man/man3/fi_cq.3 \
         man/man3/fi_domain.3 \
@@ -236,6 +243,9 @@ real_man_pages = \
 dummy_man_pages = \
         man/man3/fi_accept.3 \
         man/man3/fi_alias.3 \
+        man/man3/fi_allgather.3 \
+        man/man3/fi_allreduce.3 \
+        man/man3/fi_alltoall.3 \
         man/man3/fi_atomic.3 \
         man/man3/fi_atomic_valid.3 \
         man/man3/fi_atomicmsg.3 \
@@ -246,7 +256,14 @@ dummy_man_pages = \
         man/man3/fi_av_lookup.3 \
         man/man3/fi_av_open.3 \
         man/man3/fi_av_remove.3 \
+        man/man3/fi_av_set_diff.3 \
+        man/man3/fi_av_set_insert.3 \
+        man/man3/fi_av_set_intersect.3 \
+        man/man3/fi_av_set_remove.3 \
+        man/man3/fi_av_set_union.3 \
         man/man3/fi_av_straddr.3 \
+        man/man3/fi_barrier.3 \
+        man/man3/fi_broadcast.3 \
         man/man3/fi_cancel.3 \
         man/man3/fi_close.3 \
         man/man3/fi_cntr_add.3 \
@@ -293,6 +310,7 @@ dummy_man_pages = \
         man/man3/fi_inject_write.3 \
         man/man3/fi_inject_writedata.3 \
         man/man3/fi_join.3 \
+        man/man3/fi_join_collective.3 \
         man/man3/fi_leave.3 \
         man/man3/fi_listen.3 \
         man/man3/fi_mr_bind.3 \
@@ -308,12 +326,15 @@ dummy_man_pages = \
         man/man3/fi_poll_add.3 \
         man/man3/fi_poll_del.3 \
         man/man3/fi_poll_open.3 \
+        man/man3/fi_query_atomic.3 \
+        man/man3/fi_query_collective.3 \
         man/man3/fi_read.3 \
         man/man3/fi_readmsg.3 \
         man/man3/fi_readv.3 \
         man/man3/fi_recv.3 \
         man/man3/fi_recvmsg.3 \
         man/man3/fi_recvv.3 \
+        man/man3/fi_reduce_scatter.3 \
         man/man3/fi_reject.3 \
         man/man3/fi_rx_addr.3 \
         man/man3/fi_rx_size_left.3 \
@@ -374,6 +395,7 @@ EXTRA_DIST=
 include prov/sockets/Makefile.include
 include prov/udp/Makefile.include
 include prov/verbs/Makefile.include
+include prov/efa/Makefile.include
 include prov/usnic/Makefile.include
 include prov/psm/Makefile.include
 include prov/psm2/Makefile.include
@@ -382,12 +404,12 @@ include prov/rxm/Makefile.include
 include prov/mrail/Makefile.include
 include prov/rxd/Makefile.include
 include prov/bgq/Makefile.include
-include prov/mlx/Makefile.include
 include prov/shm/Makefile.include
 include prov/tcp/Makefile.include
 include prov/rstream/Makefile.include
 include prov/hook/Makefile.include
 include prov/hook/perf/Makefile.include
+include prov/hook/hook_debug/Makefile.include
 
 man_MANS = $(real_man_pages) $(prov_install_man_pages) $(dummy_man_pages)
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Intel Corporation, Inc.  All rights reserved.
+ * Copyright (c) 2018-2019 Intel Corporation, Inc.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -38,11 +38,13 @@ static int mrail_domain_close(fid_t fid)
 		container_of(fid, struct mrail_domain, util_domain.domain_fid.fid);
 	int ret, retv = 0;
 
-	ret = mrail_close_fids((struct fid **)mrail_domain->domains,
-			       mrail_domain->num_domains);
-	if (ret)
-		retv = ret;
-	free(mrail_domain->domains);
+	if (mrail_domain->domains) {
+		ret = mrail_close_fids((struct fid **)mrail_domain->domains,
+				       mrail_domain->num_domains);
+		if (ret)
+			retv = ret;
+		free(mrail_domain->domains);
+	}
 
 	ret = ofi_domain_close(&mrail_domain->util_domain);
 	if (ret)
@@ -177,9 +179,8 @@ static int mrail_mr_reg(struct fid *domain_fid, const void *buf, size_t len,
 
 	mrail_mr = calloc(1, sizeof(*mrail_mr) +
 			num_rails * sizeof(*mrail_mr->rails));
-	if (!mrail_mr) {
+	if (!mrail_mr)
 		return -FI_ENOMEM;
-	}
 
 	for (rail = 0, fi = mrail_domain->info->next;
 			rail < mrail_domain->num_domains;
@@ -194,8 +195,8 @@ static int mrail_mr_reg(struct fid *domain_fid, const void *buf, size_t len,
 			goto err1;
 		}
 		mrail_mr->rails[rail].base_addr =
-			(fi->domain_attr->mr_mode & FI_MR_VIRT_ADDR ?
-			 (uint64_t)buf : 0);
+			(fi->domain_attr->mr_mode & FI_MR_VIRT_ADDR) ?
+			(uint64_t)buf : 0;
 	}
 
 	mrail_mr->mr_fid.fid.fclass = FI_CLASS_MR;
@@ -208,9 +209,107 @@ static int mrail_mr_reg(struct fid *domain_fid, const void *buf, size_t len,
 
 	return 0;
 err1:
-	for (; rail != 0; --rail) {
+	for (; rail != 0; --rail)
 		fi_close(&mrail_mr->rails[rail].mr->fid);
+	free(mrail_mr);
+	return ret;
+}
+
+static int mrail_mr_regv(struct fid *domain_fid, const struct iovec *iov,
+			 size_t count, uint64_t access, uint64_t offset,
+			 uint64_t requested_key, uint64_t flags,
+			 struct fid_mr **mr, void *context)
+{
+	struct mrail_domain *mrail_domain = container_of(domain_fid,
+			struct mrail_domain, util_domain.domain_fid.fid);
+	size_t num_rails = mrail_domain->num_domains;
+	struct mrail_mr *mrail_mr;
+	struct fi_info *fi;
+	uint32_t rail;
+	int ret = 0;
+
+	mrail_mr = calloc(1, sizeof(*mrail_mr) +
+			num_rails * sizeof(*mrail_mr->rails));
+	if (!mrail_mr)
+		return -FI_ENOMEM;
+
+	for (rail = 0, fi = mrail_domain->info->next;
+			rail < mrail_domain->num_domains;
+			++rail, fi = fi->next) {
+		ret = fi_mr_regv(mrail_domain->domains[rail], iov, count, access,
+				offset, requested_key, flags,
+				&mrail_mr->rails[rail].mr, context);
+		if (ret) {
+			FI_WARN(&mrail_prov, FI_LOG_DOMAIN,
+				"Unable to register memory, rail %" PRIu32 "\n",
+				rail);
+			goto err1;
+		}
+		mrail_mr->rails[rail].base_addr =
+			(fi->domain_attr->mr_mode & FI_MR_VIRT_ADDR) ?
+			(uint64_t)iov[0].iov_base : 0;
 	}
+
+	mrail_mr->mr_fid.fid.fclass = FI_CLASS_MR;
+	mrail_mr->mr_fid.fid.context = context;
+	mrail_mr->mr_fid.fid.ops = &mrail_mr_ops;
+	mrail_mr->mr_fid.mem_desc = mrail_mr;
+	mrail_mr->mr_fid.key = FI_KEY_NOTAVAIL;
+	mrail_mr->num_mrs = mrail_domain->num_domains;
+	*mr = &mrail_mr->mr_fid;
+
+	return 0;
+err1:
+	for (; rail != 0; --rail)
+		fi_close(&mrail_mr->rails[rail].mr->fid);
+	free(mrail_mr);
+	return ret;
+}
+
+static int mrail_mr_regattr(struct fid *domain_fid, const struct fi_mr_attr *attr,
+			    uint64_t flags, struct fid_mr **mr)
+{
+	struct mrail_domain *mrail_domain = container_of(domain_fid,
+			struct mrail_domain, util_domain.domain_fid.fid);
+	size_t num_rails = mrail_domain->num_domains;
+	struct mrail_mr *mrail_mr;
+	struct fi_info *fi;
+	uint32_t rail;
+	int ret = 0;
+
+	mrail_mr = calloc(1, sizeof(*mrail_mr) +
+			num_rails * sizeof(*mrail_mr->rails));
+	if (!mrail_mr)
+		return -FI_ENOMEM;
+
+	for (rail = 0, fi = mrail_domain->info->next;
+			rail < mrail_domain->num_domains;
+			++rail, fi = fi->next) {
+		ret = fi_mr_regattr(mrail_domain->domains[rail], attr,
+				    flags, &mrail_mr->rails[rail].mr);
+		if (ret) {
+			FI_WARN(&mrail_prov, FI_LOG_DOMAIN,
+				"Unable to register memory, rail %" PRIu32 "\n",
+				rail);
+			goto err1;
+		}
+		mrail_mr->rails[rail].base_addr =
+			(fi->domain_attr->mr_mode & FI_MR_VIRT_ADDR) ?
+			(uint64_t)attr->mr_iov[0].iov_base : 0;
+	}
+
+	mrail_mr->mr_fid.fid.fclass = FI_CLASS_MR;
+	mrail_mr->mr_fid.fid.context = attr->context;
+	mrail_mr->mr_fid.fid.ops = &mrail_mr_ops;
+	mrail_mr->mr_fid.mem_desc = mrail_mr;
+	mrail_mr->mr_fid.key = FI_KEY_NOTAVAIL;
+	mrail_mr->num_mrs = mrail_domain->num_domains;
+	*mr = &mrail_mr->mr_fid;
+
+	return 0;
+err1:
+	for (; rail != 0; --rail)
+		fi_close(&mrail_mr->rails[rail].mr->fid);
 	free(mrail_mr);
 	return ret;
 }
@@ -218,8 +317,8 @@ err1:
 static struct fi_ops_mr mrail_domain_mr_ops = {
 	.size = sizeof(struct fi_ops_mr),
 	.reg = mrail_mr_reg,
-	.regv = fi_no_mr_regv,
-	.regattr = fi_no_mr_regattr,
+	.regv = mrail_mr_regv,
+	.regattr = mrail_mr_regattr,
 };
 
 int mrail_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
@@ -256,6 +355,7 @@ static struct fi_ops_domain mrail_domain_ops = {
 	.stx_ctx = fi_no_stx_context,
 	.srx_ctx = fi_no_srx_context,
 	.query_atomic = fi_no_query_atomic,
+	.query_collective = fi_no_query_collective,
 };
 
 int mrail_domain_open(struct fid_fabric *fabric, struct fi_info *info,

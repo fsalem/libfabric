@@ -77,7 +77,7 @@ extern "C" {
 #endif
 
 #define FI_MAJOR_VERSION 1
-#define FI_MINOR_VERSION 7
+#define FI_MINOR_VERSION 9
 
 enum {
 	FI_PATH_MAX		= 256,
@@ -135,6 +135,7 @@ typedef struct fid *fid_t;
 #define FI_ATOMIC		(1ULL << 4)
 #define FI_ATOMICS		FI_ATOMIC
 #define FI_MULTICAST		(1ULL << 5)
+#define FI_COLLECTIVE		(1ULL << 6)
 
 #define FI_READ			(1ULL << 8)
 #define FI_WRITE		(1ULL << 9)
@@ -161,6 +162,7 @@ typedef struct fid *fid_t;
 #define FI_COMMIT_COMPLETE	(1ULL << 30)
 #define FI_MATCH_COMPLETE	(1ULL << 31)
 
+#define FI_HMEM			(1ULL << 47)
 #define FI_VARIABLE_MSG		(1ULL << 48)
 #define FI_RMA_PMEM		(1ULL << 49)
 #define FI_SOURCE_ERR		(1ULL << 50)
@@ -201,6 +203,7 @@ enum {
 	FI_ADDR_STR,		/* formatted char * */
 	FI_ADDR_PSMX2,		/* uint64_t[2] */
 	FI_ADDR_IB_UD,		/* uint64_t[4] */
+	FI_ADDR_EFA,
 };
 
 #define FI_ADDR_UNSPEC		((uint64_t) -1)
@@ -229,6 +232,7 @@ enum fi_mr_mode {
 #define FI_MR_MMU_NOTIFY	(1 << 7)
 #define FI_MR_RMA_EVENT		(1 << 8)
 #define FI_MR_ENDPOINT		(1 << 9)
+#define FI_MR_HMEM		(1 << 10)
 
 enum fi_progress {
 	FI_PROGRESS_UNSPEC,
@@ -262,6 +266,16 @@ enum fi_resource_mgmt {
 #define FI_ORDER_SAW		(1ULL << 7)
 #define FI_ORDER_SAS		(1ULL << 8)
 #define FI_ORDER_STRICT		0x1FF
+
+#define FI_ORDER_RMA_RAR	(1ULL << 32)
+#define FI_ORDER_RMA_RAW	(1ULL << 33)
+#define FI_ORDER_RMA_WAR	(1ULL << 34)
+#define FI_ORDER_RMA_WAW	(1ULL << 35)
+#define FI_ORDER_ATOMIC_RAR	(1ULL << 36)
+#define FI_ORDER_ATOMIC_RAW	(1ULL << 37)
+#define FI_ORDER_ATOMIC_WAR	(1ULL << 38)
+#define FI_ORDER_ATOMIC_WAW	(1ULL << 39)
+
 #define FI_ORDER_DATA		(1ULL << 16)
 
 enum fi_ep_type {
@@ -301,7 +315,30 @@ enum {
 	FI_PROTO_MRAIL,
 	FI_PROTO_RSTREAM,
 	FI_PROTO_RDMA_CM_IB_XRC,
+	FI_PROTO_EFA
 };
+
+enum {
+	FI_TC_UNSPEC = 0,
+	FI_TC_DSCP = 0x100,
+	FI_TC_LABEL = 0x200,
+	FI_TC_BEST_EFFORT = FI_TC_LABEL,
+	FI_TC_LOW_LATENCY,
+	FI_TC_DEDICATED_ACCESS,
+	FI_TC_BULK_DATA,
+	FI_TC_SCAVENGER,
+	FI_TC_NETWORK_CTRL,
+};
+
+static inline uint32_t fi_tc_dscp_set(uint8_t dscp)
+{
+	return ((uint32_t) dscp) | FI_TC_DSCP;
+}
+
+static inline uint8_t fi_tc_dscp_get(uint32_t tclass)
+{
+	return tclass & FI_TC_DSCP ? (uint8_t) tclass : 0;
+}
 
 /* Mode bits */
 #define FI_CONTEXT		(1ULL << 59)
@@ -324,6 +361,7 @@ struct fi_tx_attr {
 	size_t			size;
 	size_t			iov_limit;
 	size_t			rma_iov_limit;
+	uint32_t		tclass;
 };
 
 struct fi_rx_attr {
@@ -380,6 +418,7 @@ struct fi_domain_attr {
 	size_t 			auth_key_size;
 	size_t			max_err_data;
 	size_t			mr_cnt;
+	uint32_t		tclass;
 };
 
 struct fi_fabric_attr {
@@ -473,6 +512,7 @@ enum {
 	FI_CLASS_CONNREQ,
 	FI_CLASS_MC,
 	FI_CLASS_NIC,
+	FI_CLASS_AV_SET,
 };
 
 struct fi_eq_attr;
@@ -540,7 +580,7 @@ struct fid_nic {
 };
 
 #define FI_CHECK_OP(ops, opstype, op) \
-	((ops->size > offsetof(opstype, op)) && ops->op)
+	(ops && (ops->size > offsetof(opstype, op)) && ops->op)
 
 static inline int fi_close(struct fid *fid)
 {
@@ -632,6 +672,7 @@ enum fi_type {
 	FI_TYPE_MR_MODE,
 	FI_TYPE_OP_TYPE,
 	FI_TYPE_FID,
+	FI_TYPE_COLLECTIVE_OP,
 };
 
 char *fi_tostr(const void *data, enum fi_type datatype);
@@ -652,7 +693,6 @@ struct fi_param {
 
 int fi_getparams(struct fi_param **params, int *count);
 void fi_freeparams(struct fi_param *params);
-
 
 #ifdef FABRIC_DIRECT
 #include <rdma/fi_direct.h>

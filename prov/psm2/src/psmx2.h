@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2019 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -83,36 +83,33 @@ extern "C" {
 
 extern struct fi_provider psmx2_prov;
 
-#define PSMX2_VERSION	(FI_VERSION(1, 7))
+#define PSMX2_VERSION	(OFI_VERSION_LATEST)
 
 #define PSMX2_OP_FLAGS	(FI_INJECT | FI_MULTI_RECV | FI_COMPLETION | \
 			 FI_TRIGGER | FI_INJECT_COMPLETE | \
 			 FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)
 
-#define PSMX2_PRI_CAPS	(FI_TAGGED | FI_MSG | FI_RMA | FI_ATOMICS | \
-			 FI_NAMED_RX_CTX | FI_DIRECTED_RECV | \
-			 FI_SEND | FI_RECV | FI_READ | FI_WRITE | \
-			 FI_REMOTE_READ | FI_REMOTE_WRITE)
+#define PSMX2_TX_CAPS (OFI_TX_MSG_CAPS | FI_TAGGED | OFI_TX_RMA_CAPS | FI_ATOMICS | \
+		       FI_NAMED_RX_CTX | FI_TRIGGER)
+#define PSMX2_RX_CAPS (FI_SOURCE | FI_SOURCE_ERR | FI_RMA_EVENT | OFI_RX_MSG_CAPS | \
+		       FI_TAGGED | OFI_RX_RMA_CAPS | FI_ATOMICS | FI_DIRECTED_RECV | \
+		       FI_MULTI_RECV | FI_TRIGGER)
+#define PSMX2_DOM_CAPS	(FI_SHARED_AV | FI_LOCAL_COMM | FI_REMOTE_COMM)
+#define PSMX2_CAPS (PSMX2_TX_CAPS | PSMX2_RX_CAPS | PSMX2_DOM_CAPS)
 
-#define PSMX2_SEC_CAPS	(FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
-			 FI_TRIGGER | FI_LOCAL_COMM | FI_REMOTE_COMM | \
-			 FI_SOURCE_ERR | FI_SHARED_AV)
-
-#define PSMX2_CAPS	(PSMX2_PRI_CAPS | PSMX2_SEC_CAPS | FI_REMOTE_CQ_DATA)
-
-#define PSMX2_RMA_CAPS	(PSMX2_CAPS & ~(FI_TAGGED | FI_MSG | FI_SEND | \
-			 FI_RECV | FI_DIRECTED_RECV | FI_MULTI_RECV))
+#define PSMX2_RMA_TX_CAPS (PSMX2_TX_CAPS & ~(FI_TAGGED | FI_MSG | FI_SEND))
+#define PSMX2_RMA_RX_CAPS (PSMX2_RX_CAPS & ~(FI_TAGGED | FI_MSG | FI_RECV | \
+			   FI_DIRECTED_RECV | FI_MULTI_RECV))
+#define PSMX2_RMA_CAPS (PSMX2_RMA_TX_CAPS | PSMX2_RMA_RX_CAPS | PSMX2_DOM_CAPS)
 
 #define PSMX2_SUB_CAPS	(FI_SEND | FI_RECV | FI_READ | FI_WRITE | \
 			 FI_REMOTE_READ | FI_REMOTE_WRITE)
 
-#define PSMX2_DOM_CAPS	(FI_LOCAL_COMM | FI_REMOTE_COMM)
-
 #define PSMX2_ALL_TRX_CTXT	((void *)-1)
 #define PSMX2_MAX_MSG_SIZE	((0x1ULL << 32) - 1)
 #define PSMX2_RMA_ORDER_SIZE	(4096)
-#define PSMX2_MSG_ORDER		(FI_ORDER_SAS | FI_ORDER_RAR | FI_ORDER_RAW | \
-				 FI_ORDER_WAR | FI_ORDER_WAW)
+#define PSMX2_MSG_ORDER		(FI_ORDER_SAS | OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | \
+				 OFI_ORDER_WAR_SET | OFI_ORDER_WAW_SET)
 #define PSMX2_COMP_ORDER	FI_ORDER_NONE
 
 /*
@@ -514,7 +511,7 @@ struct psmx2_trx_ctxt {
 	struct psmx2_req_queue	trigger_queue;
 
 	/* request pool for RMA/atomic ops */
-	struct util_buf_pool	*am_req_pool;
+	struct ofi_bufpool	*am_req_pool;
 	fastlock_t		am_req_pool_lock;
 
 	/* lock to prevent the sequence of psm2_mq_ipeek and psm2_mq_test be
@@ -700,6 +697,7 @@ struct psmx2_av_addr {
 	psm2_epid_t		epid;
 	uint8_t			type;
 	uint8_t			sep_id;
+	uint8_t			valid;
 };
 
 struct psmx2_av_sep {
@@ -715,6 +713,7 @@ struct psmx2_av_conn {
 
 struct psmx2_fid_av {
 	struct fid_av		av;
+	int			type;
 	struct psmx2_fid_domain	*domain;
 	struct fid_eq		*eq;
 	int			addr_format;
@@ -725,6 +724,7 @@ struct psmx2_fid_av {
 	size_t			addrlen;
 	size_t			count;
 	fastlock_t		lock;
+	struct psmx2_trx_ctxt	*av_map_trx_ctxt;
 	struct util_shm		shm;
 	struct psmx2_av_hdr	*hdr;	/* shared AV header */
 	fi_addr_t		*map;	/* shared AV address mapping */
@@ -821,18 +821,30 @@ struct psmx2_env {
 	char	*uuid;
 	int	delay;
 	int	timeout;
+	int	conn_timeout;
 	int	prog_interval;
 	char	*prog_affinity;
 	int	multi_ep;
-	int	max_trx_ctxt;
-	int	free_trx_ctxt;
-	int	num_devunits;
 	int	inject_size;
 	int	lock_level;
+	int	lazy_conn;
 	int	disconnect;
 #if (PSMX2_TAG_LAYOUT == PSMX2_TAG_LAYOUT_RUNTIME)
 	char	*tag_layout;
 #endif
+};
+
+#define PSMX2_MAX_UNITS	4
+struct psmx2_hfi_info {
+	int max_trx_ctxt;
+	int free_trx_ctxt;
+	int num_units;
+	int num_active_units;
+	int active_units[PSMX2_MAX_UNITS];
+	int unit_is_active[PSMX2_MAX_UNITS];
+	int unit_nctxts[PSMX2_MAX_UNITS];
+	int unit_nfreectxts[PSMX2_MAX_UNITS];
+	char default_domain_name[PSMX2_MAX_UNITS * 8]; /* hfi1_0;hfi1_1;...;hfi1_n */
 };
 
 extern struct fi_ops_mr		psmx2_mr_ops;
@@ -846,11 +858,20 @@ extern struct fi_ops_tagged	psmx2_tagged_ops_no_flag_undirected;
 extern struct fi_ops_tagged	psmx2_tagged_ops_no_event_undirected;
 extern struct fi_ops_tagged	psmx2_tagged_ops_no_send_event_undirected;
 extern struct fi_ops_tagged	psmx2_tagged_ops_no_recv_event_undirected;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_flag_directed_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_event_directed_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_send_event_directed_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_recv_event_directed_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_flag_undirected_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_event_undirected_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_send_event_undirected_av_map;
+extern struct fi_ops_tagged	psmx2_tagged_ops_no_recv_event_undirected_av_map;
 extern struct fi_ops_msg	psmx2_msg_ops;
 extern struct fi_ops_msg	psmx2_msg2_ops;
 extern struct fi_ops_rma	psmx2_rma_ops;
 extern struct fi_ops_atomic	psmx2_atomic_ops;
 extern struct psmx2_env		psmx2_env;
+extern struct psmx2_hfi_info	psmx2_hfi_info;
 extern struct psmx2_fid_fabric	*psmx2_active_fabric;
 
 /*
@@ -1009,8 +1030,65 @@ int	psmx2_av_add_trx_ctxt(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ct
 void	psmx2_av_remove_conn(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ctxt,
 			     psm2_epaddr_t epaddr);
 
+int	psmx2_av_query_sep(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ctxt,
+			   size_t idx);
+
+static inline
 psm2_epaddr_t psmx2_av_translate_addr(struct psmx2_fid_av *av,
-				      struct psmx2_trx_ctxt *trx_ctxt, fi_addr_t addr);
+				      struct psmx2_trx_ctxt *trx_ctxt,
+				      fi_addr_t addr,
+				      int av_type)
+{
+	psm2_epaddr_t epaddr;
+	size_t idx;
+	int ctxt;
+	int err;
+
+	if (av_type == FI_AV_MAP)
+		return (psm2_epaddr_t) addr;
+
+	av->domain->av_lock_fn(&av->lock, 1);
+
+	idx = PSMX2_ADDR_IDX(addr);
+	assert(idx < av->hdr->last && av->table[idx].valid);
+
+	if (OFI_UNLIKELY(av->table[idx].type == PSMX2_EP_SCALABLE)) {
+		if (OFI_UNLIKELY(!av->sep_info[idx].epids)) {
+			psmx2_av_query_sep(av, trx_ctxt, idx);
+			assert(av->sep_info[idx].epids);
+		}
+
+		if (OFI_UNLIKELY(!av->conn_info[trx_ctxt->id].sepaddrs[idx])) {
+			av->conn_info[trx_ctxt->id].sepaddrs[idx] =
+				calloc(av->sep_info[idx].ctxt_cnt, sizeof(psm2_epaddr_t));
+			assert(av->conn_info[trx_ctxt->id].sepaddrs[idx]);
+		}
+
+		ctxt = PSMX2_ADDR_CTXT(addr, av->rx_ctx_bits);
+		assert(ctxt < av->sep_info[idx].ctxt_cnt);
+
+		if (OFI_UNLIKELY(!av->conn_info[trx_ctxt->id].sepaddrs[idx][ctxt])) {
+			err = psmx2_epid_to_epaddr(trx_ctxt,
+						   av->sep_info[idx].epids[ctxt],
+						   &av->conn_info[trx_ctxt->id].sepaddrs[idx][ctxt]);
+			assert(!err);
+		}
+		epaddr = av->conn_info[trx_ctxt->id].sepaddrs[idx][ctxt];
+	} else {
+		if (OFI_UNLIKELY(!av->conn_info[trx_ctxt->id].epaddrs[idx])) {
+			err = psmx2_epid_to_epaddr(trx_ctxt, av->table[idx].epid,
+						   &av->conn_info[trx_ctxt->id].epaddrs[idx]);
+			assert(!err);
+		}
+		epaddr = av->conn_info[trx_ctxt->id].epaddrs[idx];
+	}
+
+#ifdef NDEBUG
+	(void) err;
+#endif
+	av->domain->av_unlock_fn(&av->lock, 1);
+	return epaddr;
+}
 
 void	psmx2_am_global_init(void);
 void	psmx2_am_global_fini(void);
@@ -1042,9 +1120,9 @@ struct psmx2_am_request *psmx2_am_request_alloc(struct psmx2_trx_ctxt *trx_ctxt)
 {
 	struct psmx2_am_request *req;
 
-	trx_ctxt->domain->am_req_pool_lock_fn(&trx_ctxt->am_req_pool_lock, 2);
-	req = util_buf_alloc(trx_ctxt->am_req_pool);
-	trx_ctxt->domain->am_req_pool_unlock_fn(&trx_ctxt->am_req_pool_lock, 2);
+	trx_ctxt->domain->am_req_pool_lock_fn(&trx_ctxt->am_req_pool_lock, 0);
+	req = ofi_buf_alloc(trx_ctxt->am_req_pool);
+	trx_ctxt->domain->am_req_pool_unlock_fn(&trx_ctxt->am_req_pool_lock, 0);
 
 	if (req)
 		memset(req, 0, sizeof(*req));
@@ -1055,9 +1133,9 @@ struct psmx2_am_request *psmx2_am_request_alloc(struct psmx2_trx_ctxt *trx_ctxt)
 static inline void psmx2_am_request_free(struct psmx2_trx_ctxt *trx_ctxt,
 					 struct psmx2_am_request *req)
 {
-	trx_ctxt->domain->am_req_pool_lock_fn(&trx_ctxt->am_req_pool_lock, 2);
-	util_buf_release(trx_ctxt->am_req_pool, req);
-	trx_ctxt->domain->am_req_pool_unlock_fn(&trx_ctxt->am_req_pool_lock, 2);
+	trx_ctxt->domain->am_req_pool_lock_fn(&trx_ctxt->am_req_pool_lock, 0);
+	ofi_buf_free(req);
+	trx_ctxt->domain->am_req_pool_unlock_fn(&trx_ctxt->am_req_pool_lock, 0);
 }
 
 struct	psmx2_fid_mr *psmx2_mr_get(struct psmx2_fid_domain *domain, uint64_t key);
@@ -1140,6 +1218,14 @@ static inline void psmx2_am_poll(struct psmx2_trx_ctxt *trx_ctxt)
 		trx_ctxt->am_poll_count = 0;
 		psm2_poll(trx_ctxt->psm2_ep);
 	}
+}
+
+static inline int psmx2_peer_match(struct dlist_entry *item, const void *arg)
+{
+	struct psmx2_epaddr_context *peer;
+
+	peer = container_of(item, struct psmx2_epaddr_context, entry);
+	return  (peer->epaddr == arg);
 }
 
 #ifdef __cplusplus

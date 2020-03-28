@@ -46,7 +46,7 @@ rxm_ep_format_atomic_pkt_hdr(struct rxm_conn *rxm_conn,
 	atomic_hdr = (struct rxm_atomic_hdr *)tx_buf->pkt.data;
 	rxm_ep_format_tx_buf_pkt(rxm_conn, data_len, pkt_op, data, 0,
 				 flags, &tx_buf->pkt);
-	tx_buf->pkt.ctrl_hdr.type = ofi_ctrl_atomic;
+	tx_buf->pkt.ctrl_hdr.type = rxm_ctrl_atomic;
 	tx_buf->pkt.hdr.op = pkt_op;
 	tx_buf->pkt.hdr.atomic.datatype = datatype;
 	tx_buf->pkt.hdr.atomic.op = atomic_op;
@@ -74,6 +74,14 @@ rxm_ep_send_atomic_req(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 	if (ret == -FI_EAGAIN)
 		rxm_ep_do_progress(&rxm_ep->util_ep);
 
+	if (OFI_LIKELY(!ret))
+		FI_DBG(&rxm_prov, FI_LOG_EP_DATA, "sent atomic request: op: %"
+		       PRIu8 " msg_id: 0x%" PRIx64 "\n", tx_buf->pkt.hdr.op,
+		       tx_buf->pkt.ctrl_hdr.msg_id);
+	else if (OFI_UNLIKELY(ret != -FI_EAGAIN))
+		FI_WARN(&rxm_prov, FI_LOG_EP_DATA, "unable to send atomic "
+			"request: op: %" PRIu8 " msg_id: 0x%" PRIx64 "\n",
+			tx_buf->pkt.hdr.op, tx_buf->pkt.ctrl_hdr.msg_id);
 	return ret;
 }
 
@@ -98,8 +106,8 @@ rxm_ep_atomic_common(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 	       msg->rma_iov_count <= RXM_IOV_LIMIT);
 
 	if (flags & FI_REMOTE_CQ_DATA) {
-		FI_DBG(&rxm_prov, FI_LOG_EP_DATA,
-		       "Atomic with remote CQ data not supported\n");
+		FI_WARN(&rxm_prov, FI_LOG_EP_DATA,
+			"atomic with remote CQ data not supported\n");
 		return -FI_EINVAL;
 	}
 
@@ -121,27 +129,30 @@ rxm_ep_atomic_common(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 	tot_len = buf_len + cmp_len + sizeof(struct rxm_atomic_hdr) +
 			sizeof(struct rxm_pkt);
 
-	if (tot_len > rxm_ep->eager_limit) {
-		FI_DBG(&rxm_prov, FI_LOG_EP_DATA,
-		       "atomic data too large %" PRId64 "\n", tot_len);
+	if (tot_len > rxm_eager_limit) {
+		FI_WARN(&rxm_prov, FI_LOG_EP_DATA,
+			"atomic data too large %zu\n", tot_len);
 		return -FI_EINVAL;
 	}
 
-	ofi_ep_lock_acquire(&rxm_ep->util_ep);
+	if (ofi_atomic_dec32(&rxm_ep->atomic_tx_credits) < 0) {
+		ret = -FI_EAGAIN;
+		goto restore_credit;
+	}
+
 	tx_buf = (struct rxm_tx_atomic_buf *)
 		 rxm_tx_buf_alloc(rxm_ep, RXM_BUF_POOL_TX_ATOMIC);
 	if (OFI_UNLIKELY(!tx_buf)) {
 		FI_WARN(&rxm_prov, FI_LOG_EP_DATA,
 			"Ran out of buffers from Atomic buffer pool\n");
 		ret = -FI_EAGAIN;
-		goto unlock;
+		goto restore_credit;
 	}
 
 	rxm_ep_format_atomic_pkt_hdr(rxm_conn, tx_buf, tot_len, op,
 				msg->datatype, msg->op, flags, msg->data,
 				msg->rma_iov, msg->rma_iov_count);
-	tx_buf->pkt.ctrl_hdr.msg_id = rxm_tx_buf_2_msg_id(rxm_ep,
-					  RXM_BUF_POOL_TX_ATOMIC, tx_buf);
+	tx_buf->pkt.ctrl_hdr.msg_id = ofi_buf_index(tx_buf);
 	tx_buf->app_context = msg->context;
 
 	atomic_hdr = (struct rxm_atomic_hdr *) tx_buf->pkt.data;
@@ -158,8 +169,30 @@ rxm_ep_atomic_common(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 			       datatype_sz);
 
 	ret = rxm_ep_send_atomic_req(rxm_ep, rxm_conn, tx_buf, tot_len);
-	if (ret)
-		rxm_tx_buf_release(rxm_ep, RXM_BUF_POOL_TX_ATOMIC, tx_buf);
+	if (OFI_LIKELY(!ret))
+		return ret;
+
+	ofi_buf_free(tx_buf);
+restore_credit:
+	ofi_atomic_inc32(&rxm_ep->atomic_tx_credits);
+	return ret;
+}
+
+static ssize_t
+rxm_ep_generic_atomic_writemsg(struct rxm_ep *rxm_ep, const struct fi_msg_atomic *msg,
+			       uint64_t flags)
+{
+	int ret;
+	struct rxm_conn *rxm_conn;
+
+	ofi_ep_lock_acquire(&rxm_ep->util_ep);
+
+	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
+	if (OFI_UNLIKELY(ret))
+		goto unlock;
+
+	ret = rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, NULL, NULL, 0,
+				   NULL, NULL, 0, ofi_op_atomic, flags);
 unlock:
 	ofi_ep_lock_release(&rxm_ep->util_ep);
 	return ret;
@@ -169,18 +202,11 @@ static ssize_t
 rxm_ep_atomic_writemsg(struct fid_ep *ep_fid, const struct fi_msg_atomic *msg,
 		       uint64_t flags)
 {
-	int ret;
-	struct rxm_conn *rxm_conn;
 	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
 					     util_ep.ep_fid.fid);
 
-	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
-	if (OFI_UNLIKELY(ret))
-		return ret;
-
-	return rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, NULL, NULL, 0,
-				    NULL, NULL, 0, ofi_op_atomic,
-				    flags | rxm_ep_tx_flags(rxm_ep));
+	return rxm_ep_generic_atomic_writemsg(rxm_ep, msg,
+				flags | rxm_ep->util_ep.tx_msg_flags);
 }
 
 static ssize_t
@@ -189,6 +215,8 @@ rxm_ep_atomic_writev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		     uint64_t addr, uint64_t key, enum fi_datatype datatype,
 		     enum fi_op op, void *context)
 {
+	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
+					     util_ep.ep_fid.fid);
 	struct fi_rma_ioc rma_iov = {
 		.addr = addr,
 		.count = ofi_total_ioc_cnt(iov, count),
@@ -207,7 +235,8 @@ rxm_ep_atomic_writev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		.data = 0,
 	};
 
-	return rxm_ep_atomic_writemsg(ep_fid, &msg, 0);
+	return rxm_ep_generic_atomic_writemsg(rxm_ep, &msg,
+					      rxm_ep->util_ep.tx_op_flags);
 }
 
 static ssize_t
@@ -230,6 +259,8 @@ rxm_ep_atomic_inject(struct fid_ep *ep_fid, const void *buf, size_t count,
 		     fi_addr_t dest_addr, uint64_t addr, uint64_t key,
 		     enum fi_datatype datatype, enum fi_op op)
 {
+	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
+					     util_ep.ep_fid.fid);
 	struct fi_ioc msg_iov = {
 		.addr = (void *) buf,
 		.count = count,
@@ -252,7 +283,31 @@ rxm_ep_atomic_inject(struct fid_ep *ep_fid, const void *buf, size_t count,
 		.data = 0,
 	};
 
-	return rxm_ep_atomic_writemsg(ep_fid, &msg, FI_INJECT);
+
+	return rxm_ep_generic_atomic_writemsg(rxm_ep, &msg, FI_INJECT);
+}
+
+static ssize_t
+rxm_ep_generic_atomic_readwritemsg(struct rxm_ep *rxm_ep,
+				   const struct fi_msg_atomic *msg,
+				   struct fi_ioc *resultv, void **result_desc,
+				   size_t result_count, uint64_t flags)
+{
+	int ret;
+	struct rxm_conn *rxm_conn;
+
+	ofi_ep_lock_acquire(&rxm_ep->util_ep);
+
+	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
+	if (OFI_UNLIKELY(ret))
+		goto unlock;
+
+	ret = rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, NULL, NULL, 0,
+				   resultv, result_desc, result_count,
+				   ofi_op_atomic_fetch, flags);
+unlock:
+	ofi_ep_lock_release(&rxm_ep->util_ep);
+	return ret;
 }
 
 static ssize_t
@@ -261,19 +316,13 @@ rxm_ep_atomic_readwritemsg(struct fid_ep *ep_fid,
 			   struct fi_ioc *resultv, void **result_desc,
 			   size_t result_count, uint64_t flags)
 {
-	int ret;
-	struct rxm_conn *rxm_conn;
+
 	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
 					     util_ep.ep_fid.fid);
 
-	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
-	if (OFI_UNLIKELY(ret))
-		return ret;
-
-	return rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, NULL, NULL, 0,
-				    resultv, result_desc, result_count,
-				    ofi_op_atomic_fetch,
-				    flags | rxm_ep_tx_flags(rxm_ep));
+	return rxm_ep_generic_atomic_readwritemsg(rxm_ep, msg,
+			resultv, result_desc, result_count,
+			flags | rxm_ep->util_ep.tx_msg_flags);
 }
 
 static ssize_t
@@ -283,6 +332,8 @@ rxm_ep_atomic_readwritev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		 uint64_t addr, uint64_t key, enum fi_datatype datatype,
 		 enum fi_op op, void *context)
 {
+	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
+					     util_ep.ep_fid.fid);
 	struct fi_rma_ioc rma_iov = {
 		.addr = addr,
 		.count = ofi_total_ioc_cnt(iov, count),
@@ -301,8 +352,8 @@ rxm_ep_atomic_readwritev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		.data = 0,
 	};
 
-	return rxm_ep_atomic_readwritemsg(ep_fid, &msg, resultv, result_desc,
-					  result_count, 0);
+	return rxm_ep_generic_atomic_readwritemsg(rxm_ep, &msg, resultv,
+			result_desc, result_count, rxm_ep->util_ep.tx_op_flags);
 }
 
 static ssize_t
@@ -329,6 +380,32 @@ rxm_ep_atomic_readwrite(struct fid_ep *ep_fid, const void *buf, size_t count,
 }
 
 static ssize_t
+rxm_ep_generic_atomic_compwritemsg(struct rxm_ep *rxm_ep,
+				   const struct fi_msg_atomic *msg,
+				   const struct fi_ioc *comparev, void **compare_desc,
+				   size_t compare_count, struct fi_ioc *resultv,
+				   void **result_desc, size_t result_count,
+				   uint64_t flags)
+{
+	int ret;
+	struct rxm_conn *rxm_conn;
+
+	ofi_ep_lock_acquire(&rxm_ep->util_ep);
+
+	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
+	if (OFI_UNLIKELY(ret))
+		goto unlock;
+
+	ret = rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, comparev,
+				   compare_desc, compare_count, resultv,
+				   result_desc, result_count,
+				   ofi_op_atomic_compare, flags);
+unlock:
+	ofi_ep_lock_release(&rxm_ep->util_ep);
+	return ret;
+}
+
+static ssize_t
 rxm_ep_atomic_compwritemsg(struct fid_ep *ep_fid,
 			   const struct fi_msg_atomic *msg,
 			   const struct fi_ioc *comparev, void **compare_desc,
@@ -336,20 +413,13 @@ rxm_ep_atomic_compwritemsg(struct fid_ep *ep_fid,
 			   void **result_desc, size_t result_count,
 			   uint64_t flags)
 {
-	int ret;
-	struct rxm_conn *rxm_conn;
 	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
 					     util_ep.ep_fid.fid);
 
-	ret = rxm_ep_prepare_tx(rxm_ep, msg->addr, &rxm_conn);
-	if (OFI_UNLIKELY(ret))
-		return ret;
-
-	return rxm_ep_atomic_common(rxm_ep, rxm_conn, msg, comparev,
+	return rxm_ep_generic_atomic_compwritemsg(rxm_ep, msg, comparev,
 				    compare_desc, compare_count, resultv,
 				    result_desc, result_count,
-				    ofi_op_atomic_compare,
-				    flags | rxm_ep_tx_flags(rxm_ep));
+				    flags | rxm_ep->util_ep.tx_msg_flags);
 }
 
 static ssize_t
@@ -361,6 +431,8 @@ rxm_ep_atomic_compwritev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		 uint64_t key, enum fi_datatype datatype, enum fi_op op,
 		 void *context)
 {
+	struct rxm_ep *rxm_ep = container_of(ep_fid, struct rxm_ep,
+					     util_ep.ep_fid.fid);
 	struct fi_rma_ioc rma_iov = {
 		.addr = addr,
 		.count = ofi_total_ioc_cnt(iov, count),
@@ -379,9 +451,9 @@ rxm_ep_atomic_compwritev(struct fid_ep *ep_fid, const struct fi_ioc *iov,
 		.data = 0,
 	};
 
-	return rxm_ep_atomic_compwritemsg(ep_fid, &msg, comparev, compare_desc,
-				compare_count, resultv, result_desc,
-				result_count, 0);
+	return rxm_ep_generic_atomic_compwritemsg(rxm_ep, &msg, comparev,
+			compare_desc, compare_count, resultv, result_desc,
+			result_count, rxm_ep->util_ep.tx_op_flags);
 }
 
 static ssize_t

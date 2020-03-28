@@ -109,8 +109,9 @@ static int wait_recvs()
 
 	if ((ret == 1) && send_data) {
 		if (entry.data != opts.transfer_size) {
-			printf("ERROR incorrect remote CQ data value. Got %lu, expected %d\n",
-					(unsigned long)entry.data, opts.transfer_size);
+			printf("ERROR incorrect remote CQ data value. Got %lu,"
+			       " expected %zu\n", (unsigned long)entry.data,
+			       opts.transfer_size);
 			return -FI_EOTHER;
 		}
 	}
@@ -137,7 +138,7 @@ static int run_test_loop(void)
 
 			ret = ft_post_tx_buf(ep, remote_fi_addr,
 					     opts.transfer_size,
-					     op_data, &tx_ctx_arr[j],
+					     op_data, &tx_ctx_arr[j].context,
 					     op_buf, mr_desc, op_tag);
 			if (ret) {
 				printf("ERROR send_msg returned %d\n", ret);
@@ -152,7 +153,7 @@ static int run_test_loop(void)
 		for (j = 0; j < concurrent_msgs; j++) {
 			op_buf = get_rx_buf(j);
 			ret = ft_post_rx_buf(ep, opts.transfer_size,
-					     &rx_ctx_arr[j], op_buf,
+					     &rx_ctx_arr[j].context, op_buf,
 					     mr_desc, op_tag);
 			if (ret) {
 				printf("ERROR recv_msg returned %d\n", ret);
@@ -214,7 +215,8 @@ int main(int argc, char **argv)
 	int ret;
 
 	opts = INIT_OPTS;
-	opts.options |= FT_OPT_OOB_SYNC | FT_OPT_SKIP_MSG_ALLOC;
+	opts.options |= FT_OPT_OOB_CTRL | FT_OPT_SKIP_MSG_ALLOC;
+	opts.mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
 
 	hints = fi_allocinfo();
 	if (!hints)
@@ -224,7 +226,7 @@ int main(int argc, char **argv)
 		switch (op) {
 		default:
 			ft_parse_addr_opts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			break;
 		case 'c':
 			concurrent_msgs = strtoul(optarg, NULL, 0);
@@ -264,7 +266,7 @@ int main(int argc, char **argv)
 		opts.dst_addr = argv[optind];
 
 	hints->mode = FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 	hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
 	hints->rx_attr->total_buffered_recv = 0;
 	hints->caps = FI_TAGGED;

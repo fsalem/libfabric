@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
 #
-# Copyright (c) 2017-2018, Intel Corporation.  All rights reserved.
+# Copyright (c) 2017-2019, Intel Corporation.  All rights reserved.
 # Copyright (c) 2016-2018, Cisco Systems, Inc. All rights reserved.
 # Copyright (c) 2016, Cray, Inc. All rights reserved.
+# Copyright (c) 2019 Amazon.com, Inc. or its affiliates. All rights reserved.
 #
 # This software is available to you under a choice of one of two
 # licenses.  You may choose to be licensed under the terms of the GNU
@@ -44,19 +45,26 @@ trap cleanup_and_exit SIGINT
 # Default behavior with no args will use sockets provider with loopback
 #
 declare BIN_PATH
-declare PROV="sockets"
+declare PROV=""
+declare CORE=""
+declare UTIL=""
 declare TEST_TYPE="quick"
 declare SERVER="127.0.0.1"
 declare CLIENT="127.0.0.1"
-declare EXCLUDE=""
 declare GOOD_ADDR=""
 declare -i VERBOSE=0
 declare -i SKIP_NEG=0
 declare COMPLEX_CFG
 declare TIMEOUT_VAL="120"
 declare STRICT_MODE=0
-declare REGEX=0
 declare FORK=0
+declare OOB=0
+declare C_ARGS=""
+declare S_ARGS=""
+
+declare cur_excludes=""
+declare file_excludes=""
+declare input_excludes=""
 
 declare -r c_outp=$(mktemp fabtests.c_outp.XXXXXX)
 declare -r s_outp=$(mktemp fabtests.s_outp.XXXXXX)
@@ -64,6 +72,7 @@ declare -r s_outp=$(mktemp fabtests.s_outp.XXXXXX)
 declare -i skip_count=0
 declare -i pass_count=0
 declare -i fail_count=0
+declare -i total_failures=0
 
 if [[ "$(uname)" == "FreeBSD" ]]; then
     declare -ri FI_ENODATA=$(python -c 'import errno; print(errno.ENOMSG)')
@@ -73,118 +82,128 @@ fi
 declare -ri FI_ENOSYS=$(python -c 'import errno; print(errno.ENOSYS)')
 
 neg_unit_tests=(
-	"dgram g00n13s"
-	"rdm g00n13s"
-	"msg g00n13s"
+	"fi_dgram g00n13s"
+	"fi_rdm g00n13s"
+	"fi_msg g00n13s"
 )
 
 functional_tests=(
-	"av_xfer -e rdm"
-	"av_xfer -e dgram"
-	"cm_data"
-	"cq_data -e msg"
-	"cq_data -e rdm"
-	"cq_data -e dgram"
-	"dgram"
-	"dgram_waitset"
-	"msg"
-	"msg_epoll"
-	"msg_sockets"
-	"poll -t queue"
-	"poll -t counter"
-	"rdm"
-	"rdm_rma_simple"
-	"rdm_rma_trigger"
-	"shared_ctx"
-	"shared_ctx --no-tx-shared-ctx"
-	"shared_ctx --no-rx-shared-ctx"
-	"shared_ctx -e msg"
-	"shared_ctx -e msg --no-tx-shared-ctx"
-	"shared_ctx -e msg --no-rx-shared-ctx"
-	"shared_ctx -e dgram"
-	"shared_ctx -e dgram --no-tx-shared-ctx"
-	"shared_ctx -e dgram --no-rx-shared-ctx"
-	"rdm_tagged_peek"
-	"scalable_ep"
-	"rdm_shared_av"
-	"multi_mr -e msg -V"
-	"multi_mr -e rdm -V"
-	"recv_cancel -e rdm -V"
-	"unexpected_msg -e msg -i 10"
-	"unexpected_msg -e rdm -i 10"
-	"unexpected_msg -e msg -S -i 10"
-	"unexpected_msg -e rdm -S -i 10"
-	"inj_complete -e msg"
-	"inj_complete -e rdm"
-	"inj_complete -e dgram"
-	"inj_complete -e msg -SR"
-	"inj_complete -e rdm -SR"
-	"inj_complete -e dgram -SR"
+	"fi_av_xfer -e rdm"
+	"fi_av_xfer -e dgram"
+	"fi_cm_data"
+	"fi_cq_data -e msg"
+	"fi_cq_data -e rdm"
+	"fi_cq_data -e dgram"
+	"fi_dgram"
+	"fi_dgram_waitset"
+	"fi_msg"
+	"fi_msg_epoll"
+	"fi_msg_sockets"
+	"fi_poll -t queue"
+	"fi_poll -t counter"
+	"fi_rdm"
+	"fi_rdm_rma_simple"
+	"fi_rdm_rma_trigger"
+	"fi_shared_ctx"
+	"fi_shared_ctx --no-tx-shared-ctx"
+	"fi_shared_ctx --no-rx-shared-ctx"
+	"fi_shared_ctx -e msg"
+	"fi_shared_ctx -e msg --no-tx-shared-ctx"
+	"fi_shared_ctx -e msg --no-rx-shared-ctx"
+	"fi_shared_ctx -e dgram"
+	"fi_shared_ctx -e dgram --no-tx-shared-ctx"
+	"fi_shared_ctx -e dgram --no-rx-shared-ctx"
+	"fi_rdm_tagged_peek"
+	"fi_scalable_ep"
+	"fi_rdm_shared_av"
+	"fi_multi_mr -e msg -V"
+	"fi_multi_mr -e rdm -V"
+	"fi_recv_cancel -e rdm -V"
+	"fi_unexpected_msg -e msg -i 10"
+	"fi_unexpected_msg -e rdm -i 10"
+	"fi_unexpected_msg -e msg -S -i 10"
+	"fi_unexpected_msg -e rdm -S -i 10"
+	"fi_inj_complete -e msg"
+	"fi_inj_complete -e rdm"
+	"fi_inj_complete -e dgram"
+	"fi_inj_complete -e msg -SR"
+	"fi_inj_complete -e rdm -SR"
+	"fi_inj_complete -e dgram -SR"
+	"fi_bw -e rdm -v -T 1"
+	"fi_bw -e msg -v -T 1"
 )
 
 short_tests=(
-	"msg_pingpong -I 5"
-	"msg_pingpong -I 5 -v"
-	"msg_bw -I 5"
-	"msg_bw -I 5 -v"
-	"rma_bw -e msg -o write -I 5"
-	"rma_bw -e msg -o read -I 5"
-	"rma_bw -e msg -o writedata -I 5"
-	"rma_bw -e rdm -o write -I 5"
-	"rma_bw -e rdm -o read -I 5"
-	"rma_bw -e rdm -o writedata -I 5"
-	"rdm_atomic -I 5 -o all"
-	"rdm_cntr_pingpong -I 5"
-	"rdm_multi_recv -I 5"
-	"rdm_pingpong -I 5"
-	"rdm_pingpong -I 5 -v"
-	"rdm_tagged_pingpong -I 5"
-	"rdm_tagged_pingpong -I 5 -v"
-	"rdm_tagged_bw -I 5"
-	"rdm_tagged_bw -I 5 -v"
-	"dgram_pingpong -I 5"
+	"fi_msg_pingpong -I 5"
+	"fi_msg_pingpong -I 5 -v"
+	"fi_msg_bw -I 5"
+	"fi_msg_bw -I 5 -v"
+	"fi_rma_bw -e msg -o write -I 5"
+	"fi_rma_bw -e msg -o read -I 5"
+	"fi_rma_bw -e msg -o writedata -I 5"
+	"fi_rma_bw -e rdm -o write -I 5"
+	"fi_rma_bw -e rdm -o read -I 5"
+	"fi_rma_bw -e rdm -o writedata -I 5"
+	"fi_rdm_atomic -I 5 -o all"
+	"fi_rdm_cntr_pingpong -I 5"
+	"fi_multi_recv -e rdm -I 5"
+	"fi_multi_recv -e msg -I 5"
+	"fi_rdm_pingpong -I 5"
+	"fi_rdm_pingpong -I 5 -v"
+	"fi_rdm_tagged_pingpong -I 5"
+	"fi_rdm_tagged_pingpong -I 5 -v"
+	"fi_rdm_tagged_bw -I 5"
+	"fi_rdm_tagged_bw -I 5 -v"
+	"fi_dgram_pingpong -I 5"
 )
 
 standard_tests=(
-	"msg_pingpong"
-	"msg_pingpong -v"
-	"msg_pingpong -k"
-	"msg_pingpong -k -v"
-	"msg_bw"
-	"msg_bw -v"
-	"rma_bw -e msg -o write"
-	"rma_bw -e msg -o read"
-	"rma_bw -e msg -o writedata"
-	"rma_bw -e rdm -o write"
-	"rma_bw -e rdm -o read"
-	"rma_bw -e rdm -o writedata"
-	"rdm_atomic -o all -I 1000"
-	"rdm_cntr_pingpong"
-	"rdm_multi_recv"
-	"rdm_pingpong"
-	"rdm_pingpong -v"
-	"rdm_pingpong -k"
-	"rdm_pingpong -k -v"
-	"rdm_tagged_pingpong"
-	"rdm_tagged_pingpong -v"
-	"rdm_tagged_bw"
-	"rdm_tagged_bw -v"
-	"dgram_pingpong"
-	"dgram_pingpong -k"
+	"fi_msg_pingpong"
+	"fi_msg_pingpong -v"
+	"fi_msg_pingpong -k"
+	"fi_msg_pingpong -k -v"
+	"fi_msg_bw"
+	"fi_msg_bw -v"
+	"fi_rma_bw -e msg -o write"
+	"fi_rma_bw -e msg -o read"
+	"fi_rma_bw -e msg -o writedata"
+	"fi_rma_bw -e rdm -o write"
+	"fi_rma_bw -e rdm -o read"
+	"fi_rma_bw -e rdm -o writedata"
+	"fi_rdm_atomic -o all -I 1000"
+	"fi_rdm_cntr_pingpong"
+	"fi_multi_recv -e rdm"
+	"fi_multi_recv -e msg"
+	"fi_rdm_pingpong"
+	"fi_rdm_pingpong -v"
+	"fi_rdm_pingpong -k"
+	"fi_rdm_pingpong -k -v"
+	"fi_rdm_tagged_pingpong"
+	"fi_rdm_tagged_pingpong -v"
+	"fi_rdm_tagged_bw"
+	"fi_rdm_tagged_bw -v"
+	"fi_dgram_pingpong"
+	"fi_dgram_pingpong -k"
 )
 
 unit_tests=(
-	"getinfo_test -s SERVER_ADDR GOOD_ADDR"
-	"av_test -g GOOD_ADDR -n 1 -s SERVER_ADDR"
-	"dom_test -n 2"
-	"eq_test"
-	"cq_test"
-	"mr_test"
-	"cntr_test"
+	"fi_getinfo_test -s SERVER_ADDR GOOD_ADDR"
+	"fi_av_test -g GOOD_ADDR -n 1 -s SERVER_ADDR"
+	"fi_dom_test -n 2"
+	"fi_eq_test"
+	"fi_cq_test"
+	"fi_mr_test"
+	"fi_cntr_test"
 )
 
 complex_tests=(
-	"ubertest"
+	"fi_ubertest"
+)
+
+multinode_tests=(
+	"fi_multinode -C msg"
+	"fi_multinode -C rma"
+	"fi_multinode_coll"
 )
 
 function errcho {
@@ -266,9 +285,9 @@ function compute_duration {
 }
 
 function read_exclude_file {
-	exclude_file=$1
+	local excl_file=$1
 
-	if [ ! -f $exclude_file ]; then
+	if [ ! -f $excl_file ]; then
 		echo "Given exclusion file does not exist!"
 		exit 1
 	fi
@@ -277,24 +296,64 @@ function read_exclude_file {
 		# Ignore patterns that are comments or just whitespaces
 		ignore_pattern="#.*|^[\t ]*$"
 		if [[ ! "$pattern" =~ $ignore_pattern ]]; then
-			if [ -z "$EXCLUDE" ]; then
-				EXCLUDE="$pattern"
+			if [ -z "$file_excludes" ]; then
+				file_excludes="$pattern"
 			else
-				EXCLUDE="${EXCLUDE},$pattern"
+				file_excludes="${file_excludes},$pattern"
 			fi
 		fi
-	done < "$exclude_file"
+	done < "$excl_file"
+}
+
+function auto_exclude {
+	local excl_file
+	local name=$UTIL
+
+	if [ -z $UTIL ]; then
+		name=$CORE
+	fi
+
+	excl_file="./fabtests/test_configs/${name}/${name}.exclude"
+	if [[ ! -f "$excl_file" ]]; then
+		excl_file="./test_configs/${name}/${name}.exclude"
+		if [[ ! -f "$excl_file" ]]; then
+			excl_file="../test_configs/${name}/${name}.exclude"
+			if [[ ! -f "$excl_file" ]]; then
+				return
+			fi
+		fi
+	fi
+
+	read_exclude_file ${excl_file}
+	cur_excludes=${file_excludes}
+	file_excludes=""
+}
+
+function set_excludes {
+	if [[ -n "$input_excludes" ]]; then
+		cur_excludes=${input_excludes}
+	fi
+
+	if [[ -n "$file_excludes" ]]; then
+		[[ -z "$cur_excludes" ]] && cur_excludes=${file_excludes} || \
+			cur_excludes="${cur_excludes},${file_excludes}"
+	fi
+
+	if [[ -n "$cur_excludes" ]]; then
+		return
+	fi
+
+	auto_exclude
 }
 
 function is_excluded {
 	test_name=$1
 
-	[[ -z "$EXCLUDE" ]] && return 1
+	[[ -z "$cur_excludes" ]] && return 1
 
-	IFS="," read -ra exclude_array <<< "$EXCLUDE"
+	IFS="," read -ra exclude_array <<< "$cur_excludes"
 	for pattern in "${exclude_array[@]}"; do
-		if [[ $REGEX -eq 1 && "$test_name" =~ $pattern ]] ||
-		   [[ "$test_name" == "$pattern" ]]; then
+		if [[ "$test_name" =~ $pattern ]]; then
 			print_results "$test_exe" "Excluded" "0" "" ""
 			skip_count+=1
 			return 0
@@ -307,8 +366,12 @@ function unit_test {
 	local test=$1
 	local is_neg=$2
 	local ret1=0
-	local test_exe=$(echo "fi_${test} -p \"$PROV\"" | \
-	    sed -e "s/GOOD_ADDR/$GOOD_ADDR/g" -e "s/SERVER_ADDR/${S_INTERFACE}/g")
+	local s_interface=$(eval "if [ $OOB -eq 1 ]; \
+		then echo $GOOD_ADDR; \
+		else echo $S_INTERFACE; \
+		fi")
+	local test_exe=$(echo "${test} -p \"$PROV\"" | \
+	    sed -e "s/GOOD_ADDR/$GOOD_ADDR/g" -e "s/SERVER_ADDR/$s_interface/g")
 	local start_time
 	local end_time
 	local test_time
@@ -353,7 +416,7 @@ function cs_test {
 	local test=$1
 	local s_ret=0
 	local c_ret=0
-	local test_exe="fi_${test} -p \"${PROV}\""
+	local test_exe="${test} -p \"${PROV}\""
 	local start_time
 	local end_time
 	local test_time
@@ -362,12 +425,22 @@ function cs_test {
 
 	start_time=$(date '+%s')
 
-	s_cmd="${BIN_PATH}${test_exe} -s $S_INTERFACE"
+	if [[ $OOB -eq 1 ]]; then
+		s_arg="-E"
+	else
+		s_arg="-s $S_INTERFACE"
+	fi
+	s_cmd="${BIN_PATH}${test_exe} ${S_ARGS} $s_arg"
 	${SERVER_CMD} "${EXPORT_ENV} $s_cmd" &> $s_outp &
 	s_pid=$!
 	sleep 1
 
-	c_cmd="${BIN_PATH}${test_exe} -s $C_INTERFACE $S_INTERFACE"
+	if [[ $OOB -eq 1 ]]; then
+		c_arg="-E $S_INTERFACE"
+	else
+		c_arg="-s $C_INTERFACE $S_INTERFACE"
+	fi
+	c_cmd="${BIN_PATH}${test_exe} ${C_ARGS} $c_arg"
 	${CLIENT_CMD} "${EXPORT_ENV} $c_cmd" &> $c_outp &
 	c_pid=$!
 
@@ -398,10 +471,32 @@ function cs_test {
 	fi
 }
 
+function set_cfg_file {
+	local cfg_file
+	local parent=$UTIL
+	local name=$CORE
+
+	if [ -z $UTIL ]; then
+		parent=$CORE
+		name=$1
+	fi
+
+	cfg_file="${PWD}/fabtests/test_configs/${parent}/${name}.test"
+	if [[ ! -f "$cfg_file" ]]; then
+		cfg_file="${PWD}/test_configs/${parent}/${name}.test"
+		if [[ ! -f "$cfg_file" ]]; then
+			return
+		fi
+	fi
+
+	COMPLEX_CFG=${cfg_file}
+}
+
 function complex_test {
 	local test=$1
 	local config=$2
-	local test_exe="fi_${test}"
+	local path=${PROV/;/\/}
+	local test_exe="${test}"
 	local s_ret=0
 	local c_ret=0
 	local start_time
@@ -409,6 +504,9 @@ function complex_test {
 	local test_time
 
 	is_excluded "$test" && return
+	if [[ -z "$COMPLEX_CFG" ]]; then
+		set_cfg_file $config
+	fi
 
 	start_time=$(date '+%s')
 
@@ -418,12 +516,16 @@ function complex_test {
 		opts=""
 	fi
 
+	if [[ $OOB -eq 1 ]]; then
+		opts+=" -E"
+	fi
+
 	s_cmd="${BIN_PATH}${test_exe} -x $opts"
 	FI_LOG_LEVEL=error ${SERVER_CMD} "${EXPORT_ENV} $s_cmd" &> $s_outp &
 	s_pid=$!
 	sleep 1
 
-	c_cmd="${BIN_PATH}${test_exe} -p \"${PROV}\" -t $config $S_INTERFACE $opts"
+	c_cmd="${BIN_PATH}${test_exe} -u "${COMPLEX_CFG}" $S_INTERFACE $opts"
 	FI_LOG_LEVEL=error ${CLIENT_CMD} "${EXPORT_ENV} $c_cmd" &> $c_outp &
 	c_pid=$!
 
@@ -465,23 +567,119 @@ function complex_test {
 	fi
 }
 
+function multinode_test {
+	local test="$1"
+	local s_ret=0
+	local c_ret=0
+	local c_out_arr=()
+	local num_procs=$2
+	local test_exe="${test} -n $num_procs -p \"${PROV}\"" 	
+	local c_out
+	local start_time
+	local end_time
+	local test_time
+
+	is_excluded "$test" && return
+
+	start_time=$(date '+%s')
+	
+	s_cmd="${BIN_PATH}${test_exe} ${S_ARGS} -s ${S_INTERFACE}"
+	${SERVER_CMD} "${EXPORT_ENV} $s_cmd" &> $s_outp &
+	s_pid=$!
+	sleep 1
+	
+	c_pid_arr=()	
+	for ((i=1; i<num_procs; i++))
+	do
+		local c_out=$(mktemp fabtests.c_outp${i}.XXXXXX)
+		c_cmd="${BIN_PATH}${test_exe} ${S_ARGS} -s ${S_INTERFACE}"
+		${CLIENT_CMD} "${EXPORT_ENV} $c_cmd" &> $c_out & 
+		c_pid_arr+=($!)
+		c_out_arr+=($c_out)
+	done
+
+	for pid in ${c_pid_arr[*]}; do
+		wait $pid
+		c_ret=($?)||$c_ret
+	done
+	
+	[[ c_ret -ne 0 ]] && kill -9 $s_pid 2> /dev/null
+
+	wait $s_pid
+	s_ret=$?
+	echo "server finished"
+	
+	end_time=$(date '+%s')
+	test_time=$(compute_duration "$start_time" "$end_time")
+	
+	pe=1
+	if [[ $STRICT_MODE -eq 0 && $s_ret -eq $FI_ENODATA && $c_ret -eq $FI_ENODATA ]] ||
+	   [[ $STRICT_MODE -eq 0 && $s_ret -eq $FI_ENOSYS && $c_ret -eq $FI_ENOSYS ]]; then
+		print_results "$test_exe" "Notrun" "$test_time" "$s_outp" "$s_cmd" "" "$c_cmd"
+		for c_out in "${c_out_arr[@]}" 
+		do
+			printf -- "  client_stdout $pe: |\n"
+			sed -e 's/^/    /' < $c_out
+			pe=$((pe+1))
+		done
+		skip_count+=1
+	elif [ $s_ret -ne 0 -o $c_ret -ne 0 ]; then
+		print_results "$test_exe" "Fail" "$test_time" "$s_outp" "$s_cmd" "" "$c_cmd"
+		for c_out in "${c_out_arr[@]}" 
+		do
+			printf -- "  client_stdout $pe: |\n"
+			sed -e 's/^/    /' < $c_out
+			pe=$((pe+1))
+		done
+		if [ $s_ret -eq 124 -o $c_ret -eq 124 ]; then
+			cleanup
+		fi
+		fail_count+=1
+	else
+		print_results "$test_exe" "Pass" "$test_time" "$s_outp" "$s_cmd" "" "$c_cmd"
+		for c_out in "${c_out_arr[@]}" 
+		do
+			printf -- "  client_stdout $pe: |\n"
+			sed -e 's/^/    /' < $c_out
+			pe=$((pe+1))
+		done
+		pass_count+=1
+	fi
+}
+
+function set_core_util {
+	prov_arr=$(echo $PROV | tr ";" " ")
+	CORE=""
+	UTIL=""
+	for p in $prov_arr; do
+		if [[ -z $CORE ]]; then
+			CORE=$p
+		else
+			UTIL=$p
+		fi
+	done
+}
+
 function main {
-	local complex_cfg="quick"
+	skip_count=0
+	pass_count=0
+	fail_count=0
+	local complex_type="quick"
+
+	set_core_util
+	set_excludes
+	
 
 	if [[ $1 == "quick" ]]; then
 		local -r tests="unit functional short"
 	elif [[ $1 == "verify" ]]; then
 		local -r tests="complex"
-		complex_cfg=$1
+		complex_type=$1
 	else
-		local -r tests=$(echo $1 | sed 's/all/unit,functional,standard,complex/g' | tr ',' ' ')
-		if [[ $1 == "all" ]]; then
-			complex_cfg=$1
+		local -r tests=$(echo $1 | sed 's/all/unit,functional,standard,complex,multinode/g' | tr ',' ' ')
+		if [[ $1 == "all" || $1 == "complex" ]]; then
+			complex_type="all"
 		fi
-	fi
-
-	if [[ -n "$COMPLEX_CFG" ]]; then
-		complex_cfg="$COMPLEX_CFG"
 	fi
 
 	if [ $VERBOSE -eq 0 ] ; then
@@ -519,8 +717,12 @@ function main {
 		;;
 		complex)
 			for test in "${complex_tests[@]}"; do
-				complex_test $test $complex_cfg
-
+				complex_test $test $complex_type
+			done
+		;;
+		multinode)
+			for test in "${multinode_tests[@]}"; do
+					multinode_test "$test" 3
 			done
 		;;
 		*)
@@ -545,7 +747,7 @@ function main {
 	print_border
 
 	cleanup
-	exit $fail_count
+	total_failures+=$fail_count
 }
 
 function usage {
@@ -562,15 +764,11 @@ function usage {
 	errcho -e " -vvv\tprint output of failing/notrun/passing"
 	errcho -e " -t\ttest set(s): all,quick,unit,functional,standard,short,complex (default quick)"
 	errcho -e " -e\texclude tests: comma delimited list of test names /
-			 regex patterns (with -R) e.g. \"dgram,rma.*write\""
+			 regex patterns e.g. \"dgram,rma.*write\""
 	errcho -e " -E\texport provided variable name and value to ssh client and server processes.
 			 options must of of the form '-E var=value'"
 	errcho -e " -f\texclude tests file: File containing list of test names /
-			 regex patterns (with -R) to exclude (one per line)"
-	errcho -e " -R\tTreat test exclusions as regex patterns"
-	errcho -e "   \tNote: the test names / patterns for -e and -f options
-			would be matched with the list of test names defined
-			in this script. They don't have fi_ prefix"
+			 regex patterns to exclude (one per line)"
 	errcho -e " -N\tskip negative unit tests"
 	errcho -e " -p\tpath to test bins (default PATH)"
 	errcho -e " -c\tclient interface"
@@ -578,10 +776,13 @@ function usage {
 	errcho -e " -u\tconfigure option for complex tests"
 	errcho -e " -T\ttimeout value in seconds"
 	errcho -e " -S\tStrict mode: -FI_ENODATA, -FI_ENOSYS errors would be treated as failures instead of skipped/notrun"
+	errcho -e " -C\tAdditional client test arguments: Parameters to pass to client fabtests"
+	errcho -e " -L\tAdditional server test arguments: Parameters to pass to server fabtests"
+	errcho -e " -b\tenable out-of-band address exchange over the default port"
 	exit 1
 }
 
-while getopts ":vt:p:g:e:f:c:s:u:T:NRSkE:" opt; do
+while getopts ":vt:p:g:e:f:c:s:u:T:C:L:NRSbkE:" opt; do
 case ${opt} in
 	t) TEST_TYPE=$OPTARG
 	;;
@@ -593,7 +794,8 @@ case ${opt} in
 	;;
 	f) read_exclude_file ${OPTARG}
 	;;
-	e) [[ -z "$EXCLUDE" ]] && EXCLUDE=${OPTARG} || EXCLUDE="${EXCLUDE},${OPTARG}"
+	e) [[ -z "$input_excludes" ]] && input_excludes=${OPTARG} || \
+		input_excludes="${input_excludes},${OPTARG}"
 	;;
 	c) C_INTERFACE=${OPTARG}
 	;;
@@ -605,11 +807,17 @@ case ${opt} in
 	;;
 	N) SKIP_NEG+=1
 	;;
-	R) REGEX=1
+	R)
 	;;
 	S) STRICT_MODE=1
 	;;
+	b) OOB=1
+	;;
 	k) FORK=1
+	;;
+	C) C_ARGS="${OPTARG}"
+	;;
+	L) S_ARGS="${OPTARG}"
 	;;
 	E)
 	delimiter="="
@@ -665,4 +873,13 @@ fi
 [ -z $S_INTERFACE ] && S_INTERFACE=$SERVER
 [ -z $GOOD_ADDR ] && GOOD_ADDR=$S_INTERFACE
 
-main ${TEST_TYPE}
+if [[ -z $PROV ]]; then
+	PROV="tcp"
+	main ${TEST_TYPE}
+	PROV="udp"
+	main ${TEST_TYPE}
+else
+	main ${TEST_TYPE}
+fi
+
+exit $total_failures

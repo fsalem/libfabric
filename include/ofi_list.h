@@ -396,10 +396,12 @@ static inline int slist_empty(struct slist *list)
 
 static inline void slist_insert_head(struct slist_entry *item, struct slist *list)
 {
-	if (slist_empty(list))
+	if (slist_empty(list)) {
 		list->tail = item;
-	else
+		item->next = NULL;
+	} else {
 		item->next = list->head;
+	}
 
 	list->head = item;
 }
@@ -411,6 +413,7 @@ static inline void slist_insert_tail(struct slist_entry *item, struct slist *lis
 	else
 		list->tail->next = item;
 
+	item->next = NULL;
 	list->tail = item;
 }
 
@@ -707,6 +710,17 @@ static inline int dlistfd_wait_avail(struct dlistfd_head *head, int timeout)
 
 	ret = fd_signal_poll(&head->signal, timeout);
 	return ret ? ret : !dlistfd_empty(head);
+}
+
+static inline struct dlist_entry *
+dlistfd_remove_first_match(struct dlistfd_head *head, dlist_func_t *match,
+			   const void *arg)
+{
+	struct dlist_entry *entry =
+		dlist_remove_first_match(&head->list, match, arg);
+	if (entry)
+		dlistfd_reset(head);
+	return entry;
 }
 
 #endif /* _OFI_LIST_H_ */

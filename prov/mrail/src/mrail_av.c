@@ -1,3 +1,35 @@
+/*
+ * Copyright (c) 2018-2019 Intel Corporation, Inc.  All rights reserved.
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *	- Redistributions of source code must retain the above
+ *	  copyright notice, this list of conditions and the following
+ *	  disclaimer.
+ *
+ *	- Redistributions in binary form must reproduce the above
+ *	  copyright notice, this list of conditions and the following
+ *	  disclaimer in the documentation and/or other materials
+ *	  provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #include "mrail.h"
 
 static int mrail_av_close(struct fid *fid)
@@ -65,7 +97,7 @@ static int mrail_av_insert(struct fid_av *av_fid, const void *addr, size_t count
 	struct mrail_av *mrail_av;
 	struct mrail_peer_info *peer_info;
 	size_t i, j, offset, num_inserted = 0;
-	fi_addr_t index;
+	fi_addr_t index, index_rail0 = FI_ADDR_NOTAVAIL;
 	int ret;
 
 	mrail_av = container_of(av_fid, struct mrail_av, util_av.av_fid);
@@ -92,26 +124,31 @@ static int mrail_av_insert(struct fid_av *av_fid, const void *addr, size_t count
 					"addr", addr);
 			ret = fi_av_insert(mrail_av->avs[j],
 					   (char *)addr + offset, 1,
-					   NULL, flags, NULL);
+					   &index, flags, NULL);
 			if (ret != 1) {
 				free(peer_info);
 				return ret;
 			}
 			offset += mrail_av->rail_addrlen[j];
+			if (j == 0)
+				index_rail0 = index;
+			assert(index == index_rail0);
 		}
+
+		peer_info->addr = index_rail0;
 		ret = ofi_av_insert_addr(&mrail_av->util_av, peer_info,
 					 &index);
-		if (fi_addr) {
-			if (ret) {
-				FI_WARN(&mrail_prov, FI_LOG_AV, \
-					"Unable to get rail fi_addr\n");
-				peer_info->addr = FI_ADDR_NOTAVAIL;
-			} else {
-				peer_info->addr = index;
-				num_inserted++;
-			}
-			fi_addr[i] = peer_info->addr;
+		if (ret) {
+			FI_WARN(&mrail_prov, FI_LOG_AV, \
+				"Unable to get rail fi_addr\n");
+			index = FI_ADDR_NOTAVAIL;
+		} else {
+			assert(index == index_rail0);
+			num_inserted++;
 		}
+
+		if (fi_addr)
+			fi_addr[i] = index;
 	}
 
 	free(peer_info);

@@ -155,7 +155,7 @@ static int init_multi_mr_res()
 
 		if (verbose) {
 			printf("MR_REG:domain_ptr, buf_ptr, mr_size, mr_ptr, mr_key)\n");
-			printf("%p, %p, %d, %p, %lu)\n",
+			printf("%p, %p, %zu, %p, %lu)\n",
 					domain,
 					mr_res_array[i].buf,
 					opts.transfer_size,
@@ -289,7 +289,7 @@ int main(int argc, char **argv)
 		switch (op) {
 		default:
 			ft_parse_addr_opts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			break;
 		case 'c':
 			mr_count = strtoull(optarg, NULL, 10);
@@ -303,9 +303,10 @@ int main(int argc, char **argv)
 		case '?':
 		case 'h':
 			ft_usage(argv[0], "Ping-pong multi memory region test");
-			FT_PRINT_OPTS_USAGE("-c <int>", "number of memory regions to create and test");
+			FT_PRINT_OPTS_USAGE("-c <int>",
+				"number of memory regions to create and test");
 			FT_PRINT_OPTS_USAGE("-V", "Enable verbose printing");
-			FT_PRINT_OPTS_USAGE("-v", "Enable DataCheck testing");
+			FT_PRINT_OPTS_USAGE("-v", "Enable data verification");
 			return EXIT_FAILURE;
 		}
 	}
@@ -315,7 +316,7 @@ int main(int argc, char **argv)
 
 	hints->caps = FI_RMA | FI_RMA_EVENT | FI_MSG;
 	hints->mode = FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 
 	ret = run_test();
 

@@ -36,115 +36,39 @@
 #include "tcpx.h"
 
 #include <sys/types.h>
-#include <ifaddrs.h>
-#include <net/if.h>
 #include <ofi_util.h>
-
-/* TODO: merge with sock_get_list_of_addr() - sock_fabric.c */
-#if HAVE_GETIFADDRS
-static void tcpx_getinfo_ifs(struct fi_info **info)
-{
-	char *tcpx_interface_name = NULL;
-	struct ifaddrs *ifaddrs, *ifa;
-	struct fi_info *head, *tail, *cur, *loopback;
-	size_t addrlen;
-	uint32_t addr_format;
-	int ret;
-
-	fi_param_get_str(&tcpx_prov, "iface", &tcpx_interface_name);
-
-	ret = ofi_getifaddrs(&ifaddrs);
-	if (ret)
-		return;
-
-	head = tail = loopback = NULL;
-	for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
-		if (ifa->ifa_addr == NULL || !(ifa->ifa_flags & IFF_UP))
-			continue;
-		if (tcpx_interface_name) {
-			if (strncmp(tcpx_interface_name, ifa->ifa_name,
-				    strlen(tcpx_interface_name)) != 0) {
-				FI_DBG(&tcpx_prov, FI_LOG_CORE,
-				       "Skip (%s) interface\n", ifa->ifa_name);
-				continue;
-			} else {
-				FI_DBG(&tcpx_prov, FI_LOG_CORE,
-				       "Matching interface (%s) found\n",
-				       ifa->ifa_name);
-			}
-		}
-
-		switch (ifa->ifa_addr->sa_family) {
-		case AF_INET:
-			addrlen = sizeof(struct sockaddr_in);
-			addr_format = FI_SOCKADDR_IN;
-			break;
-		case AF_INET6:
-			addrlen = sizeof(struct sockaddr_in6);
-			addr_format = FI_SOCKADDR_IN6;
-			break;
-		default:
-			continue;
-		}
-
-		cur = fi_dupinfo(*info);
-		if (!cur)
-			break;
-
-		if (!ofi_is_loopback_addr(ifa->ifa_addr)) {
-			if (!head)
-				head = cur;
-			else
-				tail->next = cur;
-			tail = cur;
-		} else {
-			cur->next = loopback;
-			loopback = cur;
-		}
-
-		cur->src_addr = mem_dup(ifa->ifa_addr, addrlen);
-		if (cur->src_addr) {
-			cur->src_addrlen = addrlen;
-			cur->addr_format = addr_format;
-		}
-		/* TODO: rework util code
-		util_set_fabric_domain(&tcpx_prov, cur);
-		*/
-	}
-	freeifaddrs(ifaddrs);
-
-	if (head || loopback) {
-		if (!head) { /* loopback interface only? */
-			head = loopback;
-		} else {
-			/* append loopback interfaces to tail */
-			assert(tail);
-			assert(!tail->next);
-			tail->next = loopback;
-		}
-	}
-	fi_freeinfo(*info);
-	*info = head;
-}
-#else
-#define tcpx_getinfo_ifs(info) do{ } while(0)
-#endif
+#include <stdlib.h>
 
 static int tcpx_getinfo(uint32_t version, const char *node, const char *service,
 			uint64_t flags, const struct fi_info *hints,
 			struct fi_info **info)
 {
-	int ret;
+	return ofi_ip_getinfo(&tcpx_util_prov, version, node, service, flags,
+			      hints, info);
+}
 
-	ret = util_getinfo(&tcpx_util_prov, version, node, service, flags,
-			   hints, info);
-	if (ret)
-		return ret;
+struct tcpx_port_range port_range = {
+	.low  = 0,
+	.high = 0,
+};
 
-	if (!(*info)->src_addr && !(*info)->dest_addr)
-		tcpx_getinfo_ifs(info);
+static void tcpx_init_env(void)
+{
+	srand(getpid());
 
-	return 0;
+	fi_param_get_int(&tcpx_prov, "port_high_range", &port_range.high);
+	fi_param_get_int(&tcpx_prov, "port_low_range", &port_range.low);
+
+	if (port_range.high > TCPX_PORT_MAX_RANGE)
+		port_range.high = TCPX_PORT_MAX_RANGE;
+
+	if (port_range.low < 0 || port_range.high < 0 ||
+	    port_range.low > port_range.high) {
+		FI_WARN(&tcpx_prov, FI_LOG_EP_CTRL,"User provided "
+			"port range invalid. Ignoring. \n");
+		port_range.low  = 0;
+		port_range.high = 0;
+	}
 }
 
 static void fi_tcp_fini(void)
@@ -155,7 +79,7 @@ static void fi_tcp_fini(void)
 struct fi_provider tcpx_prov = {
 	.name = "tcp",
 	.version = FI_VERSION(TCPX_MAJOR_VERSION,TCPX_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 7),
+	.fi_version = OFI_VERSION_LATEST,
 	.getinfo = tcpx_getinfo,
 	.fabric = tcpx_create_fabric,
 	.cleanup = fi_tcp_fini,
@@ -169,5 +93,12 @@ TCP_INI
 	fi_param_define(&tcpx_prov, "iface", FI_PARAM_STRING,
 			"Specify interface name");
 
+	fi_param_define(&tcpx_prov,"port_low_range", FI_PARAM_INT,
+			"define port low range");
+
+	fi_param_define(&tcpx_prov,"port_high_range", FI_PARAM_INT,
+			"define port high range");
+
+	tcpx_init_env();
 	return &tcpx_prov;
 }

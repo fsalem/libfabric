@@ -160,14 +160,14 @@ static void sock_pe_release_entry(struct sock_pe *pe,
 		pe_entry->conn->rx_pe_entry = NULL;
 
 	if (pe_entry->type == SOCK_PE_RX && pe_entry->pe.rx.atomic_cmp) {
-		util_buf_release(pe->atomic_rx_pool, pe_entry->pe.rx.atomic_cmp);
-		util_buf_release(pe->atomic_rx_pool, pe_entry->pe.rx.atomic_src);
+		ofi_buf_free(pe_entry->pe.rx.atomic_cmp);
+		ofi_buf_free(pe_entry->pe.rx.atomic_src);
 	}
 
 	if (pe_entry->is_pool_entry) {
 		ofi_rbfree(&pe_entry->comm_buf);
 		dlist_remove(&pe_entry->entry);
-		util_buf_release(pe->pe_rx_pool, pe_entry);
+		ofi_buf_free(pe_entry);
 		return;
 	}
 
@@ -205,7 +205,7 @@ static struct sock_pe_entry *sock_pe_acquire_entry(struct sock_pe *pe)
 	struct sock_pe_entry *pe_entry;
 
 	if (dlist_empty(&pe->free_list)) {
-		pe_entry = util_buf_alloc(pe->pe_rx_pool);
+		pe_entry = ofi_buf_alloc(pe->pe_rx_pool);
 		SOCK_LOG_DBG("Getting rx pool entry\n");
 		if (pe_entry) {
 			memset(pe_entry, 0, sizeof(*pe_entry));
@@ -748,7 +748,7 @@ static int sock_pe_process_rx_read(struct sock_pe *pe,
 					pe_entry->pe.rx.rx_iov[i].iov.len,
 					FI_REMOTE_READ);
 		if (!mr) {
-			SOCK_LOG_ERROR("Remote memory access error: %p, %lu, %" PRIu64 "\n",
+			SOCK_LOG_ERROR("Remote memory access error: %p, %zu, %" PRIu64 "\n",
 				       (void *) (uintptr_t) pe_entry->pe.rx.rx_iov[i].iov.addr,
 				       pe_entry->pe.rx.rx_iov[i].iov.len,
 				       pe_entry->pe.rx.rx_iov[i].iov.key);
@@ -802,7 +802,7 @@ static int sock_pe_process_rx_write(struct sock_pe *pe,
 					pe_entry->pe.rx.rx_iov[i].iov.len,
 					FI_REMOTE_WRITE);
 		if (!mr) {
-			SOCK_LOG_ERROR("Remote memory access error: %p, %lu, %" PRIu64 "\n",
+			SOCK_LOG_ERROR("Remote memory access error: %p, %zu, %" PRIu64 "\n",
 				       (void *) (uintptr_t) pe_entry->pe.rx.rx_iov[i].iov.addr,
 				       pe_entry->pe.rx.rx_iov[i].iov.len,
 				       pe_entry->pe.rx.rx_iov[i].iov.key);
@@ -885,8 +885,8 @@ static int sock_pe_recv_atomic_hdrs(struct sock_pe *pe,
 	int i;
 
 	if (!pe_entry->pe.rx.atomic_cmp) {
-		pe_entry->pe.rx.atomic_cmp = util_buf_alloc(pe->atomic_rx_pool);
-		pe_entry->pe.rx.atomic_src = util_buf_alloc(pe->atomic_rx_pool);
+		pe_entry->pe.rx.atomic_cmp = ofi_buf_alloc(pe->atomic_rx_pool);
+		pe_entry->pe.rx.atomic_src = ofi_buf_alloc(pe->atomic_rx_pool);
 		if (!pe_entry->pe.rx.atomic_cmp || !pe_entry->pe.rx.atomic_src)
 			return -FI_ENOMEM;
 	}
@@ -958,7 +958,7 @@ static int sock_pe_process_rx_atomic(struct sock_pe *pe,
 					pe_entry->pe.rx.rx_iov[i].ioc.count * datatype_sz,
 					FI_REMOTE_WRITE);
 		if (!mr) {
-			SOCK_LOG_ERROR("Remote memory access error: %p, %lu, %" PRIu64 "\n",
+			SOCK_LOG_ERROR("Remote memory access error: %p, %zu, %" PRIu64 "\n",
 				       (void *) (uintptr_t) pe_entry->pe.rx.rx_iov[i].ioc.addr,
 				       pe_entry->pe.rx.rx_iov[i].ioc.count * datatype_sz,
 				       pe_entry->pe.rx.rx_iov[i].ioc.key);
@@ -2277,7 +2277,7 @@ void sock_pe_signal(struct sock_pe *pe)
 void sock_pe_poll_add(struct sock_pe *pe, int fd)
 {
         fastlock_acquire(&pe->signal_lock);
-        if (fi_epoll_add(pe->epoll_set, fd, FI_EPOLL_IN, NULL))
+        if (ofi_epoll_add(pe->epoll_set, fd, OFI_EPOLL_IN, NULL))
 			SOCK_LOG_ERROR("failed to add to epoll set: %d\n", fd);
         fastlock_release(&pe->signal_lock);
 }
@@ -2285,7 +2285,7 @@ void sock_pe_poll_add(struct sock_pe *pe, int fd)
 void sock_pe_poll_del(struct sock_pe *pe, int fd)
 {
         fastlock_acquire(&pe->signal_lock);
-        if (fi_epoll_del(pe->epoll_set, fd))
+        if (ofi_epoll_del(pe->epoll_set, fd))
 			SOCK_LOG_DBG("failed to del from epoll set: %d\n", fd);
         fastlock_release(&pe->signal_lock);
 }
@@ -2366,7 +2366,7 @@ static int sock_pe_progress_rx_ep(struct sock_pe *pe,
 		}
 	}
 
-	num_fds = fi_epoll_wait(map->epoll_set, map->epoll_ctxs,
+	num_fds = ofi_epoll_wait(map->epoll_set, map->epoll_ctxs,
 	                        MIN(map->used, map->epoll_ctxs_sz), 0);
 	if (num_fds < 0 || num_fds == 0) {
 		if (num_fds < 0)
@@ -2538,7 +2538,7 @@ static int sock_pe_wait_ok(struct sock_pe *pe)
 	struct sock_tx_ctx *tx_ctx;
 	struct sock_rx_ctx *rx_ctx;
 
-	if (pe->waittime && ((fi_gettime_ms() - pe->waittime) < (uint64_t)sock_pe_waittime))
+	if (pe->waittime && ((ofi_gettime_ms() - pe->waittime) < (uint64_t)sock_pe_waittime))
 		return 0;
 
 	if (dlist_empty(&pe->tx_list) && dlist_empty(&pe->rx_list))
@@ -2577,7 +2577,7 @@ static void sock_pe_wait(struct sock_pe *pe)
 	int ret;
 	void *ep_contexts[1];
 
-	ret = fi_epoll_wait(pe->epoll_set, ep_contexts, 1, -1);
+	ret = ofi_epoll_wait(pe->epoll_set, ep_contexts, 1, -1);
 	if (ret < 0)
 		SOCK_LOG_ERROR("poll failed : %s\n", strerror(ofi_sockerr()));
 
@@ -2589,7 +2589,7 @@ static void sock_pe_wait(struct sock_pe *pe)
 			SOCK_LOG_ERROR("Invalid signal\n");
 	}
 	fastlock_release(&pe->signal_lock);
-	pe->waittime = fi_gettime_ms();
+	pe->waittime = ofi_gettime_ms();
 }
 
 static void sock_pe_set_affinity(void)
@@ -2698,23 +2698,21 @@ struct sock_pe *sock_pe_init(struct sock_domain *domain)
 	pe->domain = domain;
 
 	
-	ret = util_buf_pool_create(&pe->pe_rx_pool,
-				   sizeof(struct sock_pe_entry),
-				   16, 0, 1024);
+	ret = ofi_bufpool_create(&pe->pe_rx_pool,
+				 sizeof(struct sock_pe_entry), 16, 0, 1024, 0);
 	if (ret) {
 		SOCK_LOG_ERROR("failed to create buffer pool\n");
 		goto err1;
 	}
 
-	ret = util_buf_pool_create(&pe->atomic_rx_pool,
-				   SOCK_EP_MAX_ATOMIC_SZ,
-				   16, 0, 32);
+	ret = ofi_bufpool_create(&pe->atomic_rx_pool,
+				 SOCK_EP_MAX_ATOMIC_SZ, 16, 0, 32, 0);
 	if (ret) {
 		SOCK_LOG_ERROR("failed to create atomic rx buffer pool\n");
 		goto err2;
 	}
 
-	if (fi_epoll_create(&pe->epoll_set) < 0) {
+	if (ofi_epoll_create(&pe->epoll_set) < 0) {
                 SOCK_LOG_ERROR("failed to create epoll set\n");
                 goto err3;
 	}
@@ -2724,9 +2722,9 @@ struct sock_pe *sock_pe_init(struct sock_domain *domain)
 			goto err4;
 
 		if (fd_set_nonblock(pe->signal_fds[SOCK_SIGNAL_RD_FD]) ||
-		    fi_epoll_add(pe->epoll_set,
+		    ofi_epoll_add(pe->epoll_set,
 				 pe->signal_fds[SOCK_SIGNAL_RD_FD],
-				 FI_EPOLL_IN, NULL))
+				 OFI_EPOLL_IN, NULL))
 			goto err5;
 
 		pe->do_progress = 1;
@@ -2743,11 +2741,11 @@ err5:
 	ofi_close_socket(pe->signal_fds[0]);
 	ofi_close_socket(pe->signal_fds[1]);
 err4:
-	fi_epoll_close(pe->epoll_set);
+	ofi_epoll_close(pe->epoll_set);
 err3:
-	util_buf_pool_destroy(pe->atomic_rx_pool);
+	ofi_bufpool_destroy(pe->atomic_rx_pool);
 err2:
-	util_buf_pool_destroy(pe->pe_rx_pool);
+	ofi_bufpool_destroy(pe->pe_rx_pool);
 err1:
 	fastlock_destroy(&pe->lock);
 	free(pe);
@@ -2764,11 +2762,11 @@ static void sock_pe_free_util_pool(struct sock_pe *pe)
 		pe_entry = container_of(entry, struct sock_pe_entry, entry);
 		ofi_rbfree(&pe_entry->comm_buf);
 		dlist_remove(&pe_entry->entry);
-		util_buf_release(pe->pe_rx_pool, pe_entry);
+		ofi_buf_free(pe_entry);
 	}
 
-	util_buf_pool_destroy(pe->pe_rx_pool);
-	util_buf_pool_destroy(pe->atomic_rx_pool);
+	ofi_bufpool_destroy(pe->pe_rx_pool);
+	ofi_bufpool_destroy(pe->atomic_rx_pool);
 }
 
 void sock_pe_finalize(struct sock_pe *pe)
@@ -2790,7 +2788,7 @@ void sock_pe_finalize(struct sock_pe *pe)
 	fastlock_destroy(&pe->lock);
 	fastlock_destroy(&pe->signal_lock);
 	pthread_mutex_destroy(&pe->list_lock);
-	fi_epoll_close(pe->epoll_set);
+	ofi_epoll_close(pe->epoll_set);
 	free(pe);
 	SOCK_LOG_DBG("Progress engine finalize: OK\n");
 }

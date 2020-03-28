@@ -42,10 +42,23 @@
 
 #include <ofi_shm.h>
 
+struct dlist_entry ep_name_list;
+
+DEFINE_LIST(ep_name_list);
+
+void smr_cleanup(void)
+{
+	struct smr_ep_name *ep_name;
+	struct dlist_entry *tmp;
+
+	dlist_foreach_container_safe(&ep_name_list, struct smr_ep_name,
+				     ep_name, entry, tmp)
+		free(ep_name);
+}
 
 static void smr_peer_addr_init(struct smr_addr *peer)
 {
-	memset(peer->name, 0, SMR_NAME_SIZE);
+	memset(peer->name, 0, NAME_MAX);
 	peer->addr = FI_ADDR_UNSPEC;
 }
 
@@ -53,18 +66,23 @@ static void smr_peer_addr_init(struct smr_addr *peer)
 int smr_create(const struct fi_provider *prov, struct smr_map *map,
 	       const struct smr_attr *attr, struct smr_region **smr)
 {
+	struct smr_ep_name *ep_name;
 	size_t total_size, cmd_queue_offset, peer_addr_offset;
 	size_t resp_queue_offset, inject_pool_offset, name_offset;
 	int fd, ret, i;
 	void *mapped_addr;
+	size_t tx_size, rx_size;
 
 	cmd_queue_offset = sizeof(**smr);
+
+	tx_size = roundup_power_of_two(attr->tx_count);
+	rx_size = roundup_power_of_two(attr->rx_count);
 	resp_queue_offset = cmd_queue_offset + sizeof(struct smr_cmd_queue) +
-			sizeof(struct smr_cmd) * attr->rx_count;
+			sizeof(struct smr_cmd) * rx_size;
 	inject_pool_offset = resp_queue_offset + sizeof(struct smr_resp_queue) +
-			sizeof(struct smr_resp) * attr->tx_count;
+			sizeof(struct smr_resp) * tx_size;
 	peer_addr_offset = inject_pool_offset + sizeof(struct smr_inject_pool) +
-			sizeof(struct smr_inject_pool_entry) * attr->rx_count;
+			sizeof(struct smr_inject_pool_entry) * rx_size;
 	name_offset = peer_addr_offset + sizeof(struct smr_addr) * SMR_MAX_PEERS;
 	total_size = name_offset + strlen(attr->name) + 1;
 	total_size = roundup_power_of_two(total_size);
@@ -74,6 +92,15 @@ int smr_create(const struct fi_provider *prov, struct smr_map *map,
 		FI_WARN(prov, FI_LOG_EP_CTRL, "shm_open error\n");
 		goto err1;
 	}
+
+	ep_name = calloc(1, sizeof(*ep_name));
+	if (!ep_name) {
+		FI_WARN(prov, FI_LOG_EP_CTRL, "calloc error\n");
+		return -FI_ENOMEM;
+	}
+	strncpy(ep_name->name, (char *)attr->name, NAME_MAX - 1);
+	ep_name->name[NAME_MAX - 1] = '\0';
+	dlist_insert_tail(&ep_name->entry, &ep_name_list);
 
 	ret = ftruncate(fd, total_size);
 	if (ret < 0) {
@@ -88,7 +115,6 @@ int smr_create(const struct fi_provider *prov, struct smr_map *map,
 		goto err2;
 	}
 
-	/* TODO: If we unlink here, can other processes open the region? */
 	close(fd);
 
 	*smr = mapped_addr;
@@ -106,11 +132,11 @@ int smr_create(const struct fi_provider *prov, struct smr_map *map,
 	(*smr)->inject_pool_offset = inject_pool_offset;
 	(*smr)->peer_addr_offset = peer_addr_offset;
 	(*smr)->name_offset = name_offset;
-	(*smr)->cmd_cnt = attr->rx_count;
+	(*smr)->cmd_cnt = rx_size;
 
-	smr_cmd_queue_init(smr_cmd_queue(*smr), attr->rx_count);
-	smr_resp_queue_init(smr_resp_queue(*smr), attr->tx_count);
-	smr_inject_pool_init(smr_inject_pool(*smr), attr->rx_count);
+	smr_cmd_queue_init(smr_cmd_queue(*smr), rx_size);
+	smr_resp_queue_init(smr_resp_queue(*smr), tx_size);
+	smr_inject_pool_init(smr_inject_pool(*smr), rx_size);
 	for (i = 0; i < SMR_MAX_PEERS; i++)
 		smr_peer_addr_init(&smr_peer_addr(*smr)[i]);
 
@@ -129,6 +155,7 @@ err1:
 void smr_free(struct smr_region *smr)
 {
 	shm_unlink(smr_name(smr));
+	munmap(smr, smr->total_size);
 }
 
 int smr_map_create(const struct fi_provider *prov, int peer_count,
@@ -158,7 +185,7 @@ int smr_map_to_region(const struct fi_provider *prov, struct smr_peer *peer_buf)
 
 	fd = shm_open(peer_buf->peer.name, O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
-		FI_WARN(prov, FI_LOG_AV, "shm_open error\n");
+		FI_WARN_ONCE(prov, FI_LOG_AV, "shm_open error\n");
 		return -errno;
 	}
 
@@ -197,7 +224,8 @@ void smr_map_to_endpoint(struct smr_region *region, int index)
 	local_peers = smr_peer_addr(region);
 
 	strncpy(smr_peer_addr(region)[index].name,
-		region->map->peers[index].peer.name, SMR_NAME_SIZE);
+		region->map->peers[index].peer.name, NAME_MAX - 1);
+	smr_peer_addr(region)[index].name[NAME_MAX - 1] = '\0';
 	if (region->map->peers[index].peer.addr == FI_ADDR_UNSPEC)
 		return;
 
@@ -206,7 +234,7 @@ void smr_map_to_endpoint(struct smr_region *region, int index)
 
 	for (peer_index = 0; peer_index < SMR_MAX_PEERS; peer_index++) {
 		if (!strncmp(smr_name(region),
-		    peer_peers[peer_index].name, SMR_NAME_SIZE))
+		    peer_peers[peer_index].name, NAME_MAX))
 			break;
 	}
 	if (peer_index != SMR_MAX_PEERS) {
@@ -223,7 +251,7 @@ void smr_unmap_from_endpoint(struct smr_region *region, int index)
 
 	local_peers = smr_peer_addr(region);
 
-	memset(local_peers[index].name, 0, SMR_NAME_SIZE);
+	memset(local_peers[index].name, 0, NAME_MAX);
 	peer_index = region->map->peers[index].peer.addr;
 	if (peer_index == FI_ADDR_UNSPEC)
 		return;
@@ -247,8 +275,8 @@ int smr_map_add(const struct fi_provider *prov, struct smr_map *map,
 	int ret = 0;
 
 	fastlock_acquire(&map->lock);
-	strncpy(map->peers[id].peer.name, name, SMR_NAME_SIZE);
-	map->peers[id].peer.name[SMR_NAME_SIZE - 1] = '\0';
+	strncpy(map->peers[id].peer.name, name, NAME_MAX);
+	map->peers[id].peer.name[NAME_MAX - 1] = '\0';
 	ret = smr_map_to_region(prov, &map->peers[id]);
 	if (!ret)
 		map->peers[id].peer.addr = id;

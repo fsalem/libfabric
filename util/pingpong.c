@@ -52,7 +52,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
-#include <ofi_osd.h>
+#include <ofi_mem.h>
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_domain.h>
@@ -176,9 +176,10 @@ struct ct_pingpong {
 
 	uint64_t tx_seq, rx_seq, tx_cq_cntr, rx_cq_cntr;
 
-	fi_addr_t remote_fi_addr;
+	fi_addr_t local_fi_addr, remote_fi_addr;
 	void *buf, *tx_buf, *rx_buf;
-	size_t buf_size, tx_size, rx_size, msg_prefix_size;
+	size_t buf_size, tx_size, rx_size;
+	size_t rx_prefix_size, tx_prefix_size;
 
 	int timeout_sec;
 	uint64_t start, end;
@@ -192,7 +193,8 @@ struct ct_pingpong {
 
 	SOCKET ctrl_connfd;
 	char ctrl_buf[PP_CTRL_BUF_LEN + 1];
-	void *rem_name;
+
+	void *local_name, *rem_name;
 };
 
 static const char integ_alphabet[] =
@@ -322,7 +324,7 @@ static int pp_ctrl_init_client(struct ct_pingpong *ct)
 	struct sockaddr_in in_addr = {0};
 	struct addrinfo *results;
 	struct addrinfo *rp;
-	int errno_save;
+	int errno_save = 0;
 	int ret;
 
 	ret = pp_getaddrinfo(ct->opts.dst_addr, ct->opts.dst_port, &results);
@@ -525,26 +527,27 @@ static int pp_ctrl_recv(struct ct_pingpong *ct, char *buf, size_t size)
 
 static int pp_send_name(struct ct_pingpong *ct, struct fid *endpoint)
 {
-	void *local_name = NULL;
 	size_t addrlen = 0;
 	uint32_t len;
 	int ret;
 
 	PP_DEBUG("Fetching local address\n");
 
-	ret = fi_getname(endpoint, local_name, &addrlen);
+	ct->local_name = NULL;
+
+	ret = fi_getname(endpoint, ct->local_name, &addrlen);
 	if ((ret != -FI_ETOOSMALL) || (addrlen <= 0)) {
 		PP_ERR("fi_getname didn't return length\n");
 		return -EMSGSIZE;
 	}
 
-	local_name = calloc(1, addrlen);
-	if (!local_name) {
+	ct->local_name = calloc(1, addrlen);
+	if (!ct->local_name) {
 		PP_ERR("Failed to allocate memory for the address\n");
 		return -ENOMEM;
 	}
 
-	ret = fi_getname(endpoint, local_name, &addrlen);
+	ret = fi_getname(endpoint, ct->local_name, &addrlen);
 	if (ret) {
 		PP_PRINTERR("fi_getname", ret);
 		goto fn;
@@ -569,11 +572,10 @@ static int pp_send_name(struct ct_pingpong *ct, struct fid *endpoint)
 		goto fn;
 
 	PP_DEBUG("Sending name\n");
-	ret = pp_ctrl_send(ct, local_name, addrlen);
+	ret = pp_ctrl_send(ct, ct->local_name, addrlen);
 	PP_DEBUG("Sent name\n");
 
 fn:
-	free(local_name);
 	return ret;
 }
 
@@ -865,7 +867,7 @@ static int pp_check_buf(void *buf, int size)
 
 static void eq_readerr(struct fid_eq *eq)
 {
-	struct fi_eq_err_entry eq_err;
+	struct fi_eq_err_entry eq_err = { 0 };
 	int rd;
 
 	rd = fi_eq_readerr(eq, &eq_err, 0);
@@ -1051,7 +1053,7 @@ static void show_perf(char *name, int tsize, int sent, int acked,
 
 static int pp_cq_readerr(struct fid_cq *cq)
 {
-	struct fi_cq_err_entry cq_err;
+	struct fi_cq_err_entry cq_err = { 0 };
 	int ret;
 
 	ret = fi_cq_readerr(cq, &cq_err, 0);
@@ -1180,9 +1182,9 @@ static ssize_t pp_tx(struct ct_pingpong *ct, struct fid_ep *ep, size_t size)
 	ssize_t ret;
 
 	if (pp_check_opts(ct, PP_OPT_VERIFY_DATA | PP_OPT_ACTIVE))
-		pp_fill_buf((char *)ct->tx_buf + ct->msg_prefix_size, size);
+		pp_fill_buf((char *)ct->tx_buf + ct->tx_prefix_size, size);
 
-	ret = pp_post_tx(ct, ep, size + ct->msg_prefix_size, ct->tx_ctx_ptr);
+	ret = pp_post_tx(ct, ep, size + ct->tx_prefix_size, ct->tx_ctx_ptr);
 	if (ret)
 		return ret;
 
@@ -1209,9 +1211,9 @@ static ssize_t pp_inject(struct ct_pingpong *ct, struct fid_ep *ep, size_t size)
 	ssize_t ret;
 
 	if (pp_check_opts(ct, PP_OPT_VERIFY_DATA | PP_OPT_ACTIVE))
-		pp_fill_buf((char *)ct->tx_buf + ct->msg_prefix_size, size);
+		pp_fill_buf((char *)ct->tx_buf + ct->tx_prefix_size, size);
 
-	ret = pp_post_inject(ct, ep, size + ct->msg_prefix_size);
+	ret = pp_post_inject(ct, ep, size + ct->tx_prefix_size);
 	if (ret)
 		return ret;
 
@@ -1239,7 +1241,7 @@ static ssize_t pp_rx(struct ct_pingpong *ct, struct fid_ep *ep, size_t size)
 		return ret;
 
 	if (pp_check_opts(ct, PP_OPT_VERIFY_DATA | PP_OPT_ACTIVE)) {
-		ret = pp_check_buf((char *)ct->rx_buf + ct->msg_prefix_size,
+		ret = pp_check_buf((char *)ct->rx_buf + ct->rx_prefix_size,
 				   size);
 		if (ret)
 			return ret;
@@ -1252,7 +1254,7 @@ static ssize_t pp_rx(struct ct_pingpong *ct, struct fid_ep *ep, size_t size)
 	 * next incoming message.
 	 */
 	ret = pp_post_rx(ct, ct->ep, MAX(ct->rx_size , PP_MAX_CTRL_MSG) +
-			 ct->msg_prefix_size, ct->rx_ctx_ptr);
+			 ct->rx_prefix_size, ct->rx_ctx_ptr);
 	if (!ret)
 		ct->cnt_ack_msg++;
 
@@ -1294,13 +1296,12 @@ static int pp_alloc_msgs(struct ct_pingpong *ct)
 	ct->rx_size = ct->tx_size;
 	ct->buf_size = MAX(ct->tx_size, PP_MAX_CTRL_MSG) +
 		       MAX(ct->rx_size, PP_MAX_CTRL_MSG) +
-		       2 * ct->msg_prefix_size;
+		       ct->tx_prefix_size + ct->rx_prefix_size;
 
-	alignment = ofi_sysconf(_SC_PAGESIZE);
+	alignment = ofi_get_page_size();
 	if (alignment < 0) {
-		ret = -ofi_sockerr();
-		PP_PRINTERR("ofi_sysconf", ret);
-		return ret;
+		PP_PRINTERR("ofi_get_page_size", alignment);
+		return alignment;
 	}
 	/* Extra alignment for the second part of the buffer */
 	ct->buf_size += alignment;
@@ -1314,7 +1315,7 @@ static int pp_alloc_msgs(struct ct_pingpong *ct)
 	ct->rx_buf = ct->buf;
 	ct->tx_buf = (char *)ct->buf +
 			MAX(ct->rx_size, PP_MAX_CTRL_MSG) +
-			ct->msg_prefix_size;
+			ct->tx_prefix_size;
 	ct->tx_buf = (void *)(((uintptr_t)ct->tx_buf + alignment - 1) &
 			      ~(alignment - 1));
 
@@ -1402,7 +1403,11 @@ static int pp_alloc_active_res(struct ct_pingpong *ct, struct fi_info *fi)
 			return ret;
 		}
 	}
-	ct->msg_prefix_size = fi->ep_attr->msg_prefix_size;
+
+	if (fi->tx_attr->mode & FI_MSG_PREFIX)
+		ct->tx_prefix_size = fi->ep_attr->msg_prefix_size;
+	if (fi->rx_attr->mode & FI_MSG_PREFIX)
+		ct->rx_prefix_size = fi->ep_attr->msg_prefix_size;
 
 	ret = fi_endpoint(ct->domain, fi, &(ct->ep), NULL);
 	if (ret) {
@@ -1492,7 +1497,7 @@ static int pp_init_ep(struct ct_pingpong *ct)
 	}
 
 	ret = pp_post_rx(ct, ct->ep, MAX(ct->rx_size, PP_MAX_CTRL_MSG) +
-			 ct->msg_prefix_size, ct->rx_ctx_ptr);
+			 ct->rx_prefix_size, ct->rx_ctx_ptr);
 	if (ret)
 		return ret;
 
@@ -1775,8 +1780,25 @@ static int pp_init_fabric(struct ct_pingpong *ct)
 	if (ret < 0)
 		return ret;
 
-	ret = pp_av_insert(ct->av, ct->rem_name, 1, &(ct->remote_fi_addr), 0,
-			   NULL);
+	if (ct->opts.dst_addr) {
+		/* Set */
+		ret = pp_av_insert(ct->av, ct->rem_name, 1, &(ct->remote_fi_addr), 0,
+				   NULL);
+		if (ret)
+			return ret;
+		if (ct->fi->domain_attr->caps & FI_LOCAL_COMM)
+			ret = pp_av_insert(ct->av, ct->local_name, 1,
+					&(ct->local_fi_addr), 0, NULL);
+	} else {
+		if (ct->fi->domain_attr->caps & FI_LOCAL_COMM) {
+			ret = pp_av_insert(ct->av, ct->local_name, 1,
+					&(ct->local_fi_addr), 0, NULL);
+			if (ret)
+				return ret;
+		}
+		ret = pp_av_insert(ct->av, ct->rem_name, 1, &(ct->remote_fi_addr), 0,
+				   NULL);
+	}
 	if (ret)
 		return ret;
 	PP_DEBUG("Connection-less endpoint: address vector initialized\n");
@@ -1805,8 +1827,9 @@ static void pp_free_res(struct ct_pingpong *ct)
 	PP_CLOSE_FID(ct->domain);
 	PP_CLOSE_FID(ct->fabric);
 
-	if (ct->buf)
-		free(ct->rem_name);
+	free(ct->rem_name);
+	free(ct->local_name);
+	
 	if (ct->buf) {
 		ofi_freealign(ct->buf);
 		ct->buf = ct->rx_buf = ct->tx_buf = NULL;
@@ -1833,36 +1856,43 @@ static int pp_finalize(struct ct_pingpong *ct)
 	struct iovec iov;
 	int ret;
 	struct fi_context ctx[2];
-	struct fi_msg msg;
-	struct fi_msg_tagged tmsg;
+	void *mem_desc[1] = { fi_mr_desc(ct->mr) };
+	const char *fin_buf = "fin";
+	const size_t fin_buf_size = strlen(fin_buf) + 1;
 
 	PP_DEBUG("Terminating test\n");
 
-	strcpy(ct->tx_buf, "fin");
+	strcpy(ct->tx_buf, fin_buf);
+	((char *)ct->tx_buf)[fin_buf_size - 1] = '\0';
+
 	iov.iov_base = ct->tx_buf;
-	iov.iov_len = 4 + ct->msg_prefix_size;
+	iov.iov_len = fin_buf_size + ct->tx_prefix_size;
 
 	if (!(ct->fi->caps & FI_TAGGED)) {
-		memset(&msg, 0, sizeof(msg));
-		msg.msg_iov = &iov;
-		msg.iov_count = 1;
-		msg.addr = ct->remote_fi_addr;
-		msg.context = ctx;
+		struct fi_msg msg = {
+			.msg_iov = &iov,
+			.iov_count = 1,
+			.desc = mem_desc,
+			.addr = ct->remote_fi_addr,
+			.context = ctx,
+		};
 
-		ret = fi_sendmsg(ct->ep, &msg, FI_INJECT | FI_TRANSMIT_COMPLETE);
+		ret = fi_sendmsg(ct->ep, &msg, FI_TRANSMIT_COMPLETE);
 		if (ret) {
 			PP_PRINTERR("transmit", ret);
 			return ret;
 		}
 	} else {
-		memset(&tmsg, 0, sizeof(tmsg));
-		tmsg.msg_iov = &iov;
-		tmsg.iov_count = 1;
-		tmsg.addr = ct->remote_fi_addr;
-		tmsg.context = ctx;
-		tmsg.tag = TAG;
+		struct fi_msg_tagged tmsg = {
+			.msg_iov = &iov,
+			.iov_count = 1,
+			.desc = mem_desc,
+			.addr = ct->remote_fi_addr,
+			.context = ctx,
+			.tag = TAG,
+		};
 
-		ret = fi_tsendmsg(ct->ep, &tmsg, FI_INJECT | FI_TRANSMIT_COMPLETE);
+		ret = fi_tsendmsg(ct->ep, &tmsg, FI_TRANSMIT_COMPLETE);
 		if (ret) {
 			PP_PRINTERR("t-transmit", ret);
 			return ret;
@@ -1876,6 +1906,13 @@ static int pp_finalize(struct ct_pingpong *ct)
 	ret = pp_get_rx_comp(ct, ct->rx_seq);
 	if (ret)
 		return ret;
+
+	if (pp_check_opts(ct, PP_OPT_VERIFY_DATA | PP_OPT_ACTIVE)) {
+		if (strncmp((char *)ct->rx_buf, fin_buf, fin_buf_size))
+			return 1;
+
+		PP_DEBUG("Buffer verified\n");
+	}
 
 	ret = pp_ctrl_finish(ct);
 	if (ret)
@@ -2109,6 +2146,8 @@ static int run_pingpong_dgram(struct ct_pingpong *ct)
 	 */
 	ret = fi_recv(ct->ep, ct->rx_buf, ct->rx_size, fi_mr_desc(ct->mr), 0,
 		      ct->rx_ctx_ptr);
+	if (ret)
+		return ret;
 
 	ret = run_suite_pingpong(ct);
 	if (ret)

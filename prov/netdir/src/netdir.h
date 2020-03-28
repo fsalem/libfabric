@@ -67,8 +67,8 @@ extern "C" {
 				 FI_INJECT_COMPLETE | FI_DELIVERY_COMPLETE |		\
 				 FI_SELECTIVE_COMPLETION)
 
-#define OFI_ND_MSG_ORDER (FI_ORDER_RAR | FI_ORDER_RAW | FI_ORDER_RAS | \
-			FI_ORDER_WAW | FI_ORDER_WAS | FI_ORDER_SAW | FI_ORDER_SAS )
+#define OFI_ND_MSG_ORDER (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | FI_ORDER_RAS | \
+			OFI_ORDER_WAW_SET | FI_ORDER_WAS | FI_ORDER_SAW | FI_ORDER_SAS )
 
 extern struct gl_data {
 	int	inline_thr;
@@ -181,9 +181,9 @@ static inline int ofi_nd_hresult_2_fierror(HRESULT hr)
 
 #define OFI_ND_TIMEOUT_INIT(timeout)				\
 	uint64_t sfinish = ((timeout) >= 0) ?			\
-		(fi_gettime_ms() + (timeout) * 10000) : -1;
+		(ofi_gettime_ms() + (timeout) * 10000) : -1;
 
-#define OFI_ND_TIMEDOUT() ((sfinish > 0) ? fi_gettime_ms() >= sfinish : 0)
+#define OFI_ND_TIMEDOUT() ((sfinish > 0) ? ofi_gettime_ms() >= sfinish : 0)
 
 #ifdef ENABLE_DEBUG  
 # define NODEFAULT	assert(0)  

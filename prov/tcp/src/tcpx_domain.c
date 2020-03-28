@@ -48,9 +48,10 @@ static int tcpx_srx_ctx_close(struct fid *fid)
 	while (!slist_empty(&srx_ctx->rx_queue)) {
 		entry = slist_remove_head(&srx_ctx->rx_queue);
 		xfer_entry = container_of(entry, struct tcpx_xfer_entry, entry);
-		util_buf_release(srx_ctx->buf_pool, xfer_entry);
+		ofi_buf_free(xfer_entry);
 	}
 
+	ofi_bufpool_destroy(srx_ctx->buf_pool);
 	fastlock_destroy(&srx_ctx->lock);
 	free(srx_ctx);
 	return FI_SUCCESS;
@@ -85,11 +86,14 @@ static int tcpx_srx_ctx(struct fid_domain *domain, struct fi_rx_attr *attr,
 	if (ret)
 		goto err1;
 
-	ret = util_buf_pool_create(&srx_ctx->buf_pool,
-				   sizeof(struct tcpx_xfer_entry),
-				   16, 0, 1024);
+	ret = ofi_bufpool_create(&srx_ctx->buf_pool,
+				 sizeof(struct tcpx_xfer_entry), 16, 0, 1024,
+				 OFI_BUFPOOL_HUGEPAGES);
 	if (ret)
 		goto err2;
+
+	if (attr)
+		srx_ctx->op_flags = attr->op_flags;
 
 	*rx_ep = &srx_ctx->rx_fid;
 	return FI_SUCCESS;
@@ -111,6 +115,7 @@ static struct fi_ops_domain tcpx_domain_ops = {
 	.stx_ctx = fi_no_stx_context,
 	.srx_ctx = tcpx_srx_ctx,
 	.query_atomic = fi_no_query_atomic,
+	.query_collective = fi_no_query_collective,
 };
 
 static int tcpx_domain_close(fid_t fid)
@@ -126,7 +131,7 @@ static int tcpx_domain_close(fid_t fid)
 		return ret;
 
 	free(tcpx_domain);
-	return 0;
+	return FI_SUCCESS;
 }
 
 static struct fi_ops tcpx_domain_fi_ops = {
@@ -167,7 +172,7 @@ int tcpx_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 	(*domain)->ops = &tcpx_domain_ops;
 	(*domain)->mr = &tcpx_domain_fi_ops_mr;
 
-	return 0;
+	return FI_SUCCESS;
 err:
 	free(tcpx_domain);
 	return ret;

@@ -135,9 +135,6 @@
     <ClCompile Include="src\perf.c">
       <Filter>Source Files\src</Filter>
     </ClCompile>
-    <ClCompile Include="src\shared\ofi_str.c">
-      <Filter>Source Files\src\shared</Filter>
-    </ClCompile>
     <ClCompile Include="src\mem.c">
       <Filter>Source Files\src</Filter>
     </ClCompile>
@@ -181,6 +178,12 @@
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
     <ClCompile Include="prov\util\src\util_mem_monitor.c">
+      <Filter>Source Files\prov\util</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\util\src\util_mem_hooks.c">
+      <Filter>Source Files\prov\util</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\util\src\util_mr_cache.c">
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
     <ClCompile Include="src\windows\osd.c">
@@ -399,6 +402,9 @@
     <ClCompile Include="prov\util\src\util_cntr.c">
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
+    <ClCompile Include="prov\util\src\util_coll.c">
+      <Filter>Source Files\prov\util</Filter>
+    </ClCompile>
     <ClCompile Include="prov\util\src\util_atomic.c">
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
@@ -424,6 +430,9 @@
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_rma.c">
+      <Filter>Source Files\prov\tcp\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_msg.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_ep.c">
@@ -477,12 +486,18 @@
     <ClCompile Include="prov\hook\perf\src\hook_perf.c">
       <Filter>Source Files\prov\hook\perf\src</Filter>
     </ClCompile>
+    <ClCompile Include="src\shared\ofi_str.c">
+      <Filter>Source Files\src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\fasthash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\ofi.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ofi_coll.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\ofi_enosys.h">
@@ -540,6 +555,9 @@
       <Filter>Header Files\rdma</Filter>
     </ClInclude>
     <ClInclude Include="include\rdma\fi_trigger.h">
+      <Filter>Header Files\rdma</Filter>
+    </ClInclude>
+    <ClInclude Include="include\rdma\fi_collective.h">
       <Filter>Header Files\rdma</Filter>
     </ClInclude>
     <ClInclude Include="include\windows\osd.h">
@@ -703,6 +721,9 @@
     </ClInclude>
     <ClInclude Include="prov\hook\src\hook.h">
       <Filter>Source Files\prov\hook\src</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ofi_hook.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

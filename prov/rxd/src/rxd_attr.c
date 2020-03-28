@@ -32,25 +32,29 @@
 
 #include "rxd.h"
 
-#define RXD_EP_CAPS (FI_MSG | FI_TAGGED | FI_RMA | FI_ATOMIC | FI_SOURCE |  \
-			FI_DIRECTED_RECV | FI_MULTI_RECV | FI_RMA_EVENT)
-#define RXD_TX_CAPS (FI_SEND | FI_WRITE | FI_READ)
-#define RXD_RX_CAPS (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE)
+#define RXD_TX_CAPS (OFI_TX_MSG_CAPS | FI_TAGGED | OFI_TX_RMA_CAPS | FI_ATOMICS)
+#define RXD_RX_CAPS (FI_SOURCE | FI_RMA_EVENT | OFI_RX_MSG_CAPS | FI_TAGGED | \
+		     OFI_RX_RMA_CAPS | FI_ATOMICS | FI_DIRECTED_RECV | FI_MULTI_RECV)
+#define RXD_TX_OP_FLAGS (FI_INJECT | FI_INJECT_COMPLETE | FI_COMPLETION	|   \
+			 FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)
+#define RXD_RX_OP_FLAGS (FI_MULTI_RECV | FI_COMPLETION)
 #define RXD_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
 
 struct fi_tx_attr rxd_tx_attr = {
-	.caps = RXD_EP_CAPS | RXD_TX_CAPS,
-	.comp_order = FI_ORDER_STRICT,
+	.caps = RXD_TX_CAPS,
+	.op_flags = RXD_TX_OP_FLAGS,
+	.comp_order = FI_ORDER_NONE,
 	.msg_order = FI_ORDER_SAS,
 	.inject_size = RXD_MAX_MTU_SIZE - sizeof(struct rxd_base_hdr),
 	.size = (1ULL << RXD_MAX_TX_BITS),
 	.iov_limit = RXD_IOV_LIMIT,
-	.rma_iov_limit = 0,
+	.rma_iov_limit = RXD_IOV_LIMIT,
 };
 
 struct fi_rx_attr rxd_rx_attr = {
-	.caps = RXD_EP_CAPS | RXD_RX_CAPS,
-	.comp_order = FI_ORDER_STRICT,
+	.caps = RXD_RX_CAPS,
+	.op_flags = RXD_RX_OP_FLAGS,
+	.comp_order = FI_ORDER_NONE,
 	.msg_order = FI_ORDER_SAS,
 	.total_buffered_recv = 0,
 	.size = (1ULL << RXD_MAX_RX_BITS),
@@ -63,7 +67,10 @@ struct fi_ep_attr rxd_ep_attr = {
 	.protocol_version = 1,
 	.max_msg_size = SIZE_MAX,
 	.tx_ctx_cnt = 1,
-	.rx_ctx_cnt = 1
+	.rx_ctx_cnt = 1,
+	.max_order_raw_size = SIZE_MAX,
+	.max_order_waw_size = SIZE_MAX,
+	.mem_tag_format = FI_TAG_GENERIC,
 };
 
 struct fi_domain_attr rxd_domain_attr = {
@@ -90,7 +97,7 @@ struct fi_fabric_attr rxd_fabric_attr = {
 };
 
 struct fi_info rxd_info = {
-	.caps = RXD_DOMAIN_CAPS | RXD_EP_CAPS | RXD_TX_CAPS | RXD_RX_CAPS,
+	.caps = RXD_DOMAIN_CAPS | RXD_TX_CAPS | RXD_RX_CAPS,
 	.addr_format = FI_FORMAT_UNSPEC,
 	.tx_attr = &rxd_tx_attr,
 	.rx_attr = &rxd_rx_attr,

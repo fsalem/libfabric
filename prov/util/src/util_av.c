@@ -242,8 +242,9 @@ int ofi_get_addr(uint32_t *addr_format, uint64_t flags,
 
 void *ofi_av_get_addr(struct util_av *av, fi_addr_t fi_addr)
 {
-	struct util_av_entry *entry =
-		util_buf_get_by_index(av->av_entry_pool, fi_addr);
+	struct util_av_entry *entry;
+
+	entry = ofi_bufpool_get_ibuf(av->av_entry_pool, fi_addr);
 	return entry->addr;
 }
 
@@ -272,15 +273,15 @@ int ofi_av_insert_addr(struct util_av *av, const void *addr, fi_addr_t *fi_addr)
 	HASH_FIND(hh, av->hash, addr, av->addrlen, entry);
 	if (entry) {
 		if (fi_addr)
-			*fi_addr = util_get_buf_index(av->av_entry_pool, entry);
+			*fi_addr = ofi_buf_index(entry);
 		ofi_atomic_inc32(&entry->use_cnt);
 		return 0;
 	} else {
-		entry = util_buf_indexed_alloc(av->av_entry_pool);
+		entry = ofi_ibuf_alloc(av->av_entry_pool);
 		if (!entry)
 			return -FI_ENOMEM;
 		if (fi_addr)
-			*fi_addr = util_get_buf_index(av->av_entry_pool, entry);
+			*fi_addr = ofi_buf_index(entry);
 		memcpy(entry->addr, addr, av->addrlen);
 		ofi_atomic_initialize32(&entry->use_cnt, 1);
 		HASH_ADD(hh, av->hash, addr, av->addrlen, entry);
@@ -295,8 +296,7 @@ int ofi_av_elements_iter(struct util_av *av, ofi_av_apply_func apply, void *arg)
 
 	HASH_ITER(hh, av->hash, av_entry, av_entry_tmp) {
 		ret = apply(av, av_entry->addr,
-			    util_get_buf_index(av->av_entry_pool, av_entry),
-			    arg);
+			    ofi_buf_index(av_entry), arg);
 		if (OFI_UNLIKELY(ret))
 			return ret;
 	}
@@ -308,8 +308,9 @@ int ofi_av_elements_iter(struct util_av *av, ofi_av_apply_func apply, void *arg)
  */
 int ofi_av_remove_addr(struct util_av *av, fi_addr_t fi_addr)
 {
-	struct util_av_entry *av_entry =
-		util_buf_get_by_index(av->av_entry_pool, fi_addr);
+	struct util_av_entry *av_entry;
+
+	av_entry = ofi_bufpool_get_ibuf(av->av_entry_pool, fi_addr);
 	if (!av_entry)
 		return -FI_ENOENT;
 
@@ -317,20 +318,25 @@ int ofi_av_remove_addr(struct util_av *av, fi_addr_t fi_addr)
 		return FI_SUCCESS;
 
 	HASH_DELETE(hh, av->hash, av_entry);
-	util_buf_indexed_release(av->av_entry_pool, av_entry);
+	ofi_ibuf_free(av_entry);
 	return 0;
+}
+
+fi_addr_t ofi_av_lookup_fi_addr_unsafe(struct util_av *av, const void *addr)
+{
+	struct util_av_entry *entry = NULL;
+
+	HASH_FIND(hh, av->hash, addr, av->addrlen, entry);
+	return entry ? ofi_buf_index(entry) : FI_ADDR_NOTAVAIL;
 }
 
 fi_addr_t ofi_av_lookup_fi_addr(struct util_av *av, const void *addr)
 {
-	struct util_av_entry *entry = NULL;
-
+	fi_addr_t fi_addr;
 	fastlock_acquire(&av->lock);
-	HASH_FIND(hh, av->hash, addr, av->addrlen, entry);
+	fi_addr = ofi_av_lookup_fi_addr_unsafe(av, addr);
 	fastlock_release(&av->lock);
-
-	return entry ? util_get_buf_index(av->av_entry_pool, entry) :
-		       FI_ADDR_NOTAVAIL;
+	return fi_addr;
 }
 
 static void *
@@ -351,6 +357,13 @@ int ofi_av_bind(struct fid *av_fid, struct fid *eq_fid, uint64_t flags)
 		return -FI_EINVAL;
 	}
 
+	if (!(av->flags & FI_EVENT)) {
+		FI_WARN(av->prov, FI_LOG_AV, "cannot bind EQ to an AV that was "
+			"configured for synchronous operation: FI_EVENT flag was"
+			" not specified in fi_av_attr when AV was opened\n");
+		return -FI_EINVAL;
+	}
+
 	if (flags) {
 		FI_WARN(av->prov, FI_LOG_AV, "invalid flags\n");
 		return -FI_EINVAL;
@@ -365,7 +378,7 @@ int ofi_av_bind(struct fid *av_fid, struct fid *eq_fid, uint64_t flags)
 static void util_av_close(struct util_av *av)
 {
 	HASH_CLEAR(hh, av->hash);
-	util_buf_pool_destroy(av->av_entry_pool);
+	ofi_bufpool_destroy(av->av_entry_pool);
 }
 
 int ofi_av_close_lightweight(struct util_av *av)
@@ -377,6 +390,8 @@ int ofi_av_close_lightweight(struct util_av *av)
 
 	if (av->eq)
 		ofi_atomic_dec32(&av->eq->ref);
+
+	fastlock_destroy(&av->ep_list_lock);
 
 	ofi_atomic_dec32(&av->domain->ref);
 	fastlock_destroy(&av->lock);
@@ -409,18 +424,15 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 {
 	int ret = 0;
 	size_t max_count;
-	struct util_buf_attr pool_attr = {
+	struct ofi_bufpool_attr pool_attr = {
 		.size		= util_attr->addrlen +
 				  sizeof(struct util_av_entry),
 		.alignment	= 16,
 		.max_cnt	= 0,
 		/* Don't use track of buffer, because user can close
 		 * the AV without prior deletion of addresses */
-		.track_used	= 0,
-		.indexing	= {
-			.used		= 1,
-			.ordered	= 1,
-		},
+		.flags		= OFI_BUFPOOL_NO_TRACK | OFI_BUFPOOL_INDEXED |
+				  OFI_BUFPOOL_HUGEPAGES,
 	};
 
 	/* TODO: Handle FI_READ */
@@ -447,11 +459,7 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 	av->hash = NULL;
 
 	pool_attr.chunk_cnt = av->count;
-	ret = util_buf_pool_create_attr(&pool_attr, &av->av_entry_pool);
-	if (ret)
-		return ret;
-
-	return ret;
+	return ofi_bufpool_create_attr(&pool_attr, &av->av_entry_pool);
 }
 
 static int util_verify_av_attr(struct util_domain *domain,
@@ -504,6 +512,7 @@ int ofi_av_init_lightweight(struct util_domain *domain, const struct fi_av_attr 
 	 */
 	av->context = context;
 	av->domain = domain;
+	fastlock_init(&av->ep_list_lock);
 	dlist_init(&av->ep_list);
 	ofi_atomic_inc32(&domain->ref);
 	return 0;

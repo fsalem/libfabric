@@ -142,6 +142,7 @@ int ofi_check_cq_attr(const struct fi_provider *prov,
 
 	switch (attr->wait_obj) {
 	case FI_WAIT_NONE:
+	case FI_WAIT_YIELD:
 		break;
 	case FI_WAIT_SET:
 		if (!attr->wait_set) {
@@ -240,7 +241,7 @@ ssize_t ofi_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
 
 	cq->cq_fastlock_acquire(&cq->cq_lock);
-	if (ofi_cirque_isempty(cq->cirq)) {
+	if (ofi_cirque_isempty(cq->cirq) || !count) {
 		cq->cq_fastlock_release(&cq->cq_lock);
 		cq->progress(cq);
 		cq->cq_fastlock_acquire(&cq->cq_lock);
@@ -379,23 +380,20 @@ ssize_t ofi_cq_sreadfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 			 fi_addr_t *src_addr, const void *cond, int timeout)
 {
 	struct util_cq *cq;
-	uint64_t start;
+	uint64_t endtime;
 	int ret;
 
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
 	assert(cq->wait && cq->internal_wait);
-	start = (timeout >= 0) ? fi_gettime_ms() : 0;
+	endtime = ofi_timeout_time(timeout);
 
 	do {
 		ret = ofi_cq_readfrom(cq_fid, buf, count, src_addr);
 		if (ret != -FI_EAGAIN)
 			break;
 
-		if (timeout >= 0) {
-			timeout -= (int) (fi_gettime_ms() - start);
-			if (timeout <= 0)
-				return -FI_EAGAIN;
-		}
+		if (ofi_adjust_timeout(endtime, &timeout))
+			return -FI_EAGAIN;
 
 		if (ofi_atomic_get32(&cq->signaled)) {
 			ofi_atomic_set32(&cq->signaled, 0);
@@ -540,6 +538,7 @@ static int fi_cq_init(struct fid_domain *domain, struct fi_cq_attr *attr,
 	case FI_WAIT_UNSPEC:
 	case FI_WAIT_FD:
 	case FI_WAIT_MUTEX_COND:
+	case FI_WAIT_YIELD:
 		memset(&wait_attr, 0, sizeof wait_attr);
 		wait_attr.wait_obj = attr->wait_obj;
 		cq->internal_wait = 1;
@@ -670,3 +669,30 @@ err1:
 	ofi_cq_cleanup(cq);
 	return ret;
 }
+
+uint64_t ofi_rx_flags[] = {
+	[ofi_op_msg] = FI_RECV,
+	[ofi_op_tagged] = FI_RECV | FI_TAGGED,
+	[ofi_op_read_req] = FI_RMA | FI_REMOTE_READ,
+	[ofi_op_read_rsp] = FI_RMA | FI_REMOTE_READ,
+	[ofi_op_write] = FI_RMA | FI_REMOTE_WRITE,
+	[ofi_op_write_async] = FI_RMA | FI_REMOTE_WRITE,
+	[ofi_op_atomic] = FI_ATOMIC | FI_REMOTE_WRITE,
+	[ofi_op_atomic_fetch] = FI_ATOMIC | FI_REMOTE_READ,
+	[ofi_op_atomic_compare] = FI_ATOMIC | FI_REMOTE_READ,
+	[ofi_op_read_async] = FI_RMA | FI_READ,
+};
+
+uint64_t ofi_tx_flags[] = {
+	[ofi_op_msg] = FI_SEND,
+	[ofi_op_tagged] = FI_SEND | FI_TAGGED,
+	[ofi_op_read_req] = FI_RMA | FI_READ,
+	[ofi_op_read_rsp] = FI_RMA | FI_READ,
+	[ofi_op_write] = FI_RMA | FI_WRITE,
+	[ofi_op_write_async] = FI_RMA | FI_WRITE,
+	[ofi_op_atomic] = FI_ATOMIC | FI_WRITE,
+	[ofi_op_atomic_fetch] = FI_ATOMIC | FI_READ,
+	[ofi_op_atomic_compare] = FI_ATOMIC | FI_READ,
+	[ofi_op_read_async] = FI_RMA | FI_RMA,
+};
+

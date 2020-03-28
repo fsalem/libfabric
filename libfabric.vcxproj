@@ -338,6 +338,14 @@
     <ClCompile Include="prov\netdir\src\netdir_init.c" />
     <ClCompile Include="prov\netdir\src\netdir_ndinit.c" />
     <ClCompile Include="prov\netdir\src\netdir_pep.c" />
+    <ClCompile Include="prov\sockets\src\sock_attr.c">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="prov\sockets\src\sock_atomic.c">
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -521,6 +529,7 @@
     <ClCompile Include="prov\tcp\src\tcpx_cq.c" />
     <ClCompile Include="prov\tcp\src\tcpx_domain.c" />
     <ClCompile Include="prov\tcp\src\tcpx_rma.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_msg.c" />
     <ClCompile Include="prov\tcp\src\tcpx_ep.c" />
     <ClCompile Include="prov\tcp\src\tcpx_fabric.c" />
     <ClCompile Include="prov\tcp\src\tcpx_eq.c" />
@@ -544,6 +553,7 @@
     <ClCompile Include="prov\util\src\util_av.c" />
     <ClCompile Include="prov\util\src\util_buf.c" />
     <ClCompile Include="prov\util\src\util_cntr.c" />
+    <ClCompile Include="prov\util\src\util_coll.c" />
     <ClCompile Include="prov\util\src\util_cq.c" />
     <ClCompile Include="prov\util\src\util_domain.c" />
     <ClCompile Include="prov\util\src\util_ep.c" />
@@ -556,6 +566,8 @@
     <ClCompile Include="prov\util\src\util_poll.c" />
     <ClCompile Include="prov\util\src\util_wait.c" />
     <ClCompile Include="prov\util\src\util_mem_monitor.c" />
+    <ClCompile Include="prov\util\src\util_mem_hooks.c" />
+    <ClCompile Include="prov\util\src\util_mr_cache.c" />
     <ClCompile Include="src\common.c" />
     <ClCompile Include="src\enosys.c">
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">4127;869</DisableSpecificWarnings>
@@ -584,6 +596,7 @@
     <ClInclude Include="include\ofi_hook.h" />
     <ClInclude Include="include\ofi_mr.h" />
     <ClInclude Include="include\ofi_net.h" />
+    <ClInclude Include="include\ofi_coll.h" />
     <ClInclude Include="include\ofi_enosys.h" />
     <ClInclude Include="include\ofi_file.h" />
     <ClInclude Include="include\ofi_iov.h" />
@@ -611,6 +624,7 @@
     <ClInclude Include="include\rdma\fi_rma.h" />
     <ClInclude Include="include\rdma\fi_tagged.h" />
     <ClInclude Include="include\rdma\fi_trigger.h" />
+    <ClInclude Include="include\rdma\fi_collective.h" />
     <ClInclude Include="include\rdma\providers\fi_log.h" />
     <ClInclude Include="include\rdma\providers\fi_prov.h" />
     <ClInclude Include="include\uthash.h" />

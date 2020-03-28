@@ -3,6 +3,12 @@
 
 @Library(['CrayNetworkCI@master', 'dst-shared@master']) _
 
+if (!isBuildable()) {
+    echo "build request is not valid, skipping build"
+    currentBuild.result = 'SUCCESS'
+    return
+}
+
 pipeline {
     options {
         // Generic build options
@@ -24,7 +30,7 @@ pipeline {
             steps {
                 // creating git short hash
                 script {
-                    GIT_SHORT_COMMIT = sh(returnStdout: true, script: "git log -n 1 --pretty=format:'%h'").trim()
+                    GIT_DESCRIPTION = sh(returnStdout: true, script: "git describe --tags").trim()
                     LIBFABRIC_INSTALL = pwd tmp: true
                 }
 
@@ -61,7 +67,7 @@ pipeline {
                 LIBFABRIC_INSTALL_PATH = "$LIBFABRIC_INSTALL"
                 SFT_BIN = "${SFT_INSTALL_PATH + '/bin'}"
                 SFT_MAX_JOB_TIME = '3'
-                SFT_NUM_JOBS = '4'
+                SFT_NUM_JOBS = '6'
                 SFT_PROVIDER = 'verbs;ofi_rxm'
                 SFT_BASELINE_DIR = "contrib/cray"
                 SFT_BASELINE_RESULTS_FILE = 'sft_test_results_baseline.txt'
@@ -93,21 +99,16 @@ pipeline {
                                     -r smoketests.tap \\
                                     -w smoketests.xml \\
                                     tap simple.smoketests simple"""
-
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "smoketests.xml"]]])
                         }
                     }
                 }
                 stage('Functional Tests: RC') {
                     steps {
                         tee ('fabtests-rc.log') {
-                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -v -T 60'
+                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -v -T 120'
                         }
                         tee ('ubertests-rc.log') {
-                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -vvv -T 60 -t complex -u all'
+                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -vvv -T 120 -t complex -u all'
                         }
                     }
                     post {
@@ -125,22 +126,16 @@ pipeline {
                                     fabtests \\
                                     functional.fabtests.rc.uber \\
                                     functional"""
-
-
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "*-rc.xml"]]])
                         }
                     }
 		}
                 stage('Functional Tests: XRC') {
                     steps {
                         tee ('fabtests-xrc.log') {
-                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -v -T 60 -e FI_VERBS_PREFER_XRC=1 -e FI_OFI_RXM_USE_SRX=1'
+                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -v -T 120 -e FI_VERBS_PREFER_XRC=1 -e FI_OFI_RXM_USE_SRX=1'
                         }
                         tee ('ubertests-xrc.log') {
-                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -vvv -T 60 -t complex -u all -e FI_VERBS_PREFER_XRC=1 -e FI_OFI_RXM_USE_SRX=1'
+                            sh 'srun -n 2 --ntasks-per-node=1 contrib/cray/bin/fabtest_wrapper.sh -p ${FABTEST_PATH}/bin -vvv -T 120 -t complex -u all -e FI_VERBS_PREFER_XRC=1 -e FI_OFI_RXM_USE_SRX=1'
                         }
                     }
                     post {
@@ -158,11 +153,6 @@ pipeline {
                                     fabtests \\
                                     functional.fabtests.xrc.uber \\
                                     functional"""
-
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "*-xrc.xml"]]])
                         }
                     }
                 }
@@ -210,12 +200,6 @@ pipeline {
                             """
                             // archive the results
                             archiveArtifacts artifacts: "${env.SFT_TEST_RESULTS_SUBDIR}/*"
-
-                            // skip validation of SFT for now until intermittent errors are fixed
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "${env.SFT_TEST_RESULTS_SUBDIR}/sft_*${SFT_TEST_RESULTS}"]]])
                         }
                     }
                 }
@@ -263,12 +247,6 @@ pipeline {
                             """
                             // archive the results
                             archiveArtifacts artifacts: "${env.SFT_TEST_RESULTS_SUBDIR}/*"
-
-                            // skip validation of SFT for now until intermittent errors are fixed
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "${env.SFT_TEST_RESULTS_SUBDIR}/sft_*${SFT_TEST_RESULTS}"]]])
                         }
                     }
                 }
@@ -291,20 +269,55 @@ pipeline {
                                     -r mpi.tap \\
                                     -w mpi.xml \\
                                     tap applications.mpi applications"""
-
-                            step ([$class: 'XUnitBuilder',
-                               thresholds: [
-                                    [$class: 'FailedThreshold', unstableThreshold: '0']],
-                                    tools: [[$class: 'JUnitType', pattern: "mpi.xml"]]])
                         }
                     }
+                }
+            }
+            post {
+                always {
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "smoketests.xml"]]])
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "*-rc.xml"]]])
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "*-xrc.xml"]]])
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "sft_test_results/RC/sft_*_test_results.xml"]]])
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "sft_test_results/XRC/sft_*_test_results.xml"]]])
+                    step ([$class: 'XUnitPublisher',
+                       thresholds: [
+                            [$class: 'FailedThreshold', unstableThreshold: '0']],
+                            tools: [[$class: 'JUnitType', pattern: "mpi.xml"]]])
+                }
+                cleanup {
+                    echo "*** Test: Post: Cleanup: env.BRANCH_NAME: ${BRANCH_NAME} ***"
+                    script {
+                        if ( isInternalBuild() ) {
+                            echo "*** Test: Post: Cleanup: isInternalBuild: TRUE ***"
+                        } else {
+                            echo "*** Test: Post: Cleanup: isInternalBuild: FALSE ***"
+                        }
+                    }
+                    echo "*** Test: Post: Cleanup: currentBuild.currentResult: ${currentBuild.currentResult} ***"
                 }
             }
         }
         stage("Install Libfabric Build") {
             when {
                 allOf {
-                    expression { currentBuild.result == 'SUCCESS' } ;
+                    expression { currentBuild.currentResult == 'SUCCESS' } ;
+                    expression { isInternalBuild() } ;
                     anyOf {
                         expression { env.BRANCH_NAME == 'master' } ;
                         buildingTag() ;
@@ -312,7 +325,7 @@ pipeline {
                 }
             }
             environment {
-                LIBFABRIC_INSTALL_PATH="${LIBFABRIC_BUILD_PATH + '/' + GIT_SHORT_COMMIT}"
+                LIBFABRIC_INSTALL_PATH="${LIBFABRIC_BUILD_PATH + '/' + GIT_DESCRIPTION}"
             }
             steps {
                 sh './autogen.sh'
@@ -324,7 +337,8 @@ pipeline {
         stage("Deploy") {
             when {
                 allOf {
-                    expression { currentBuild.result == 'SUCCESS' } ;
+                    expression { currentBuild.currentResult == 'SUCCESS' } ;
+                    expression { isInternalBuild() } ;
                     anyOf {
                         expression { env.BRANCH_NAME == 'master' } ;
                         buildingTag()
@@ -346,7 +360,7 @@ pipeline {
                     steps {
                         dir (env.TAG_DIRECTORY) {
                             sh "rm -f nightly || true"
-                            sh "ln -s ../$GIT_SHORT_COMMIT nightly"
+                            sh "ln -s ../$GIT_DESCRIPTION nightly"
                         }
                     }
                 }
@@ -357,63 +371,14 @@ pipeline {
                     steps {
                         dir (env.TAG_DIRECTORY) {
                             sh "rm -f $BRANCH_NAME || true"
-                            sh "ln -s ../$GIT_SHORT_COMMIT $BRANCH_NAME"
+                            sh "ln -s ../$GIT_DESCRIPTION $BRANCH_NAME"
                         }
                     }
-                }
-                stage("Create RPMs") {
-                    steps {
-                        sh 'make dist-bzip2'
-                        sh '$WORKSPACE/contrib/buildrpm/buildrpmLibfabric.sh -i verbs -i sockets -osmv $(ls libfabric-*.tar.bz2)'
-                    }
-                    post {
-                        success {
-                            stash name: 'rpms', includes: 'rpmbuild/RPMS/**/*'
-                            stash name: 'sources',  includes: 'rpmbuild/SOURCES/*'
-                        }
-                    }
-                }
-            }
-        }
-        stage('Publish') {
-            agent {
-                node {
-                    label 'utility_pod'
-                }
-            }
-            when {
-                allOf {
-                    expression { currentBuild.result == 'SUCCESS' } ;
-                    expression { return isRelease("${env.GIT_BRANCH}") }
-                }
-            }
-            steps {
-                container('utility') {
-                    sh 'tar -cvzf /tmp/libfabric-source.tar.gz --exclude "*.log" .'
-
-                    // publishes the source RPM to DST's Artifactory instance
-                    transfer(artifactName: '/tmp/libfabric-source.tar.gz')
-
-                    // Sends event to message bus to notify other builds
-                    publishEvents(["os-networking-libfabric-verbs-publish"])
                 }
             }
         }
     }
     post {
-        success {
-            script {
-                try {
-                    unstash 'rpms'
-                    unstash 'sources'
-                    archiveArtifacts 'rpmbuild/SOURCES/*'
-                    archiveArtifacts 'rpmbuild/RPMS/**/*'
-                }
-                catch (Exception e) {
-                    echo 'No rpms to archive'
-                }
-            }
-        }
         changed {
             script {
                 // send email when the state of the pipeline changes
@@ -444,7 +409,7 @@ pipeline {
         FABTEST_PATH = "${WORKSPACE + '/installs/fabtests'}"
         LIBFABRIC_BUILD_PATH = "${ROOT_BUILD_PATH + '/libfabric'}"
         OMB_BUILD_PATH = "${ROOT_BUILD_PATH + '/osu-micro-benchmarks/5.4.2/libexec/osu-micro-benchmarks/mpi'}"
-        MPICH_PATH = "${ROOT_BUILD_PATH + '/mpich/3.3b3'}"
+        MPICH_PATH = "${ROOT_BUILD_PATH + '/mpich/3.3'}"
         SFT_INSTALL_PATH = "${ROOT_BUILD_PATH + '/libfabric-sft/stable'}"
         BATS_INSTALL_PATH = "${ROOT_BUILD_PATH + '/bats/stable/bin'}"
     }

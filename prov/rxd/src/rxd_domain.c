@@ -48,6 +48,7 @@ static struct fi_ops_domain rxd_domain_ops = {
 	.stx_ctx = fi_no_stx_context,
 	.srx_ctx = fi_no_srx_context,
 	.query_atomic = rxd_query_atomic,
+	.query_collective = fi_no_query_collective,
 };
 
 static int rxd_domain_close(fid_t fid)
@@ -135,7 +136,6 @@ int rxd_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 					sizeof(struct rxd_atom_hdr);
 	rxd_domain->max_seg_sz = rxd_domain->max_mtu_sz - sizeof(struct rxd_data_pkt) -
 				 dg_info->ep_attr->msg_prefix_size;
-	rxd_domain->mr_mode = dg_info->domain_attr->mr_mode;
 
 	ret = ofi_domain_init(fabric, info, &rxd_domain->util_domain, context);
 	if (ret) {

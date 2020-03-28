@@ -42,19 +42,16 @@ int tcpx_send_msg(struct tcpx_xfer_entry *tx_entry)
 	ssize_t bytes_sent;
 	struct msghdr msg = {0};
 
-	msg.msg_iov = tx_entry->msg_data.iov;
-	msg.msg_iovlen = tx_entry->msg_data.iov_cnt;
+	msg.msg_iov = tx_entry->iov;
+	msg.msg_iovlen = tx_entry->iov_cnt;
 
-	bytes_sent = ofi_sendmsg_tcp(tx_entry->ep->conn_fd,
-	                             &msg, MSG_NOSIGNAL);
+	bytes_sent = ofi_sendmsg_tcp(tx_entry->ep->sock, &msg, MSG_NOSIGNAL);
 	if (bytes_sent < 0)
 		return ofi_sockerr() == EPIPE ? -FI_ENOTCONN : -ofi_sockerr();
 
-	tx_entry->done_len += bytes_sent;
-	if (tx_entry->done_len < ntohll(tx_entry->msg_hdr.hdr.size)) {
-		ofi_consume_iov(tx_entry->msg_data.iov,
-				&tx_entry->msg_data.iov_cnt,
-				bytes_sent);
+	tx_entry->rem_len -= bytes_sent;
+	if (tx_entry->rem_len) {
+		ofi_consume_iov(tx_entry->iov, &tx_entry->iov_cnt, bytes_sent);
 		return -FI_EAGAIN;
 	}
 	return FI_SUCCESS;
@@ -69,32 +66,56 @@ static ssize_t tcpx_read_from_buffer(struct stage_buf *sbuf,
 	assert(sbuf->len >= sbuf->off);
 	rem_size = sbuf->len - sbuf->off;
 	assert(rem_size);
-	ret = (rem_size >= len)? len : rem_size;
+	ret = (rem_size >= len) ? len : rem_size;
 	memcpy(buf, &sbuf->buf[sbuf->off], ret);
 	sbuf->off += ret;
 	return ret;
 }
 
-int tcpx_recv_hdr(SOCKET sock, struct stage_buf *sbuf,
-		  struct tcpx_rx_detect *rx_detect)
+static int tcpx_recv_hdr(SOCKET sock, struct stage_buf *sbuf,
+			  struct tcpx_cur_rx_msg *cur_rx_msg)
 {
 	void *rem_buf;
 	size_t rem_len;
 	ssize_t bytes_recvd;
 
-	rem_buf = (uint8_t *) &rx_detect->hdr + rx_detect->done_len;
-	rem_len = sizeof(rx_detect->hdr) - rx_detect->done_len;
+	rem_buf = (uint8_t *) &cur_rx_msg->hdr + cur_rx_msg->done_len;
+	rem_len = cur_rx_msg->hdr_len - cur_rx_msg->done_len;
 
-	if (sbuf->len != sbuf->off) {
+	if (sbuf->len != sbuf->off)
 		bytes_recvd = tcpx_read_from_buffer(sbuf, rem_buf, rem_len);
-	} else {
+	else
 		bytes_recvd = ofi_recv_socket(sock, rem_buf, rem_len, 0);
-	}
 	if (bytes_recvd <= 0)
-		return (bytes_recvd)? -ofi_sockerr(): -FI_ENOTCONN;
+		return bytes_recvd ? -ofi_sockerr(): -FI_ENOTCONN;
 
-	rx_detect->done_len += bytes_recvd;
-	return (rem_len == bytes_recvd)? FI_SUCCESS : -FI_EAGAIN;
+	return bytes_recvd;
+}
+
+int tcpx_comm_recv_hdr(SOCKET sock, struct stage_buf *sbuf,
+		        struct tcpx_cur_rx_msg *cur_rx_msg)
+{
+	ssize_t bytes_recvd;
+	bytes_recvd = tcpx_recv_hdr(sock, sbuf, cur_rx_msg);
+	if (bytes_recvd < 0)
+		return bytes_recvd;
+	cur_rx_msg->done_len += bytes_recvd;
+
+	if (cur_rx_msg->done_len == sizeof(cur_rx_msg->hdr.base_hdr)) {
+		cur_rx_msg->hdr_len = (size_t) cur_rx_msg->hdr.base_hdr.payload_off;
+
+		if (cur_rx_msg->hdr_len > cur_rx_msg->done_len) {
+			bytes_recvd = tcpx_recv_hdr(sock, sbuf, cur_rx_msg);
+			if (bytes_recvd < 0)
+				return bytes_recvd;
+			cur_rx_msg->done_len += bytes_recvd;
+			return (cur_rx_msg->done_len == cur_rx_msg->hdr_len) ?
+				FI_SUCCESS : -FI_EAGAIN;
+		}
+	}
+
+	return (cur_rx_msg->done_len == cur_rx_msg->hdr_len) ?
+		FI_SUCCESS : -FI_EAGAIN;
 }
 
 static ssize_t tcpx_readv_from_buffer(struct stage_buf *sbuf,
@@ -124,26 +145,23 @@ int tcpx_recv_msg_data(struct tcpx_xfer_entry *rx_entry)
 {
 	ssize_t bytes_recvd;
 
-	if (rx_entry->ep->stage_buf.len != rx_entry->ep->stage_buf.off) {
-		bytes_recvd = tcpx_readv_from_buffer(&rx_entry->ep->stage_buf,
-						rx_entry->msg_data.iov,
-						rx_entry->msg_data.iov_cnt);
-	 }else {
-		bytes_recvd = ofi_readv_socket(rx_entry->ep->conn_fd,
-					       rx_entry->msg_data.iov,
-					       rx_entry->msg_data.iov_cnt);
-	}
-	if (bytes_recvd <= 0)
-		return (bytes_recvd)? -ofi_sockerr(): -FI_ENOTCONN;
+	if (!rx_entry->iov_cnt || !rx_entry->iov[0].iov_len)
+		return FI_SUCCESS;
 
-	rx_entry->done_len += bytes_recvd;
-	if (rx_entry->done_len < ntohll(rx_entry->msg_hdr.hdr.size)) {
-		ofi_consume_iov(rx_entry->msg_data.iov,
-				&rx_entry->msg_data.iov_cnt,
-				bytes_recvd);
-		return -FI_EAGAIN;
-	}
-	return FI_SUCCESS;
+	if (rx_entry->ep->stage_buf.len != rx_entry->ep->stage_buf.off)
+		bytes_recvd = tcpx_readv_from_buffer(&rx_entry->ep->stage_buf,
+						     rx_entry->iov,
+						     rx_entry->iov_cnt);
+	else
+		bytes_recvd = ofi_readv_socket(rx_entry->ep->sock,
+					       rx_entry->iov,
+					       rx_entry->iov_cnt);
+	if (bytes_recvd <= 0)
+		return (bytes_recvd) ? -ofi_sockerr(): -FI_ENOTCONN;
+
+	ofi_consume_iov(rx_entry->iov, &rx_entry->iov_cnt, bytes_recvd);
+	return (rx_entry->iov_cnt && rx_entry->iov[0].iov_len) ?
+		-FI_EAGAIN: FI_SUCCESS;
 }
 
 int tcpx_read_to_buffer(SOCKET sock, struct stage_buf *stage_buf)
@@ -153,7 +171,7 @@ int tcpx_read_to_buffer(SOCKET sock, struct stage_buf *stage_buf)
 	bytes_recvd = ofi_recv_socket(sock, stage_buf->buf,
 				      stage_buf->size, 0);
 	if (bytes_recvd <= 0)
-		return (bytes_recvd)? -ofi_sockerr(): -FI_ENOTCONN;
+		return (bytes_recvd) ? -ofi_sockerr(): -FI_ENOTCONN;
 
 	stage_buf->len = bytes_recvd;
 	stage_buf->off = 0;

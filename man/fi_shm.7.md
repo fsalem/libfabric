@@ -74,7 +74,7 @@ of operations.
   provided (and in the case of setting the src address without FI_SOURCE and
   no hints), the process ID will be used as a default address.
   On endpoint creation, if the src_addr has the "fi_shm://" prefix, the provider
-  will append ":[dom_idx]:[ep_idx]" as a unique endpoint name (essentially,
+  will append ":[uid]:[dom_idx]:[ep_idx]" as a unique endpoint name (essentially,
   in place of a service).  In the case of the "fi_ns://" prefix (or any other
   prefix if one was provided by the application), no supplemental information
   is required to make it unique and it will remain with only the
@@ -105,13 +105,17 @@ structures
 
 EPs must be bound to both RX and TX CQs.
 
-No support for selective completions or multi-recv.
-
 No support for counters.
 
 # RUNTIME PARAMETERS
-
-No runtime parameters are currently defined.
+*FI_SHM_DISABLE_CMA*
+: Force disable use of CMA (Cross Memory Attach) in shm environment. CMA is a
+  Linux feature for copying data directly between two processes without the use
+  of intermediate buffering. This requires the processes to have full access to
+  the peer's address space (the same permissions required to perform a ptrace).
+  CMA is enabled by default but checked for availability during run-time.
+  For more information see the CMA [`man pages`]
+  (https://linux.die.net/man/2/process_vm_writev)
 
 # SEE ALSO
 

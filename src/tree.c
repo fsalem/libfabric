@@ -47,12 +47,32 @@
 #include <assert.h>
 
 #include <ofi_tree.h>
+#include <ofi_osd.h>
 #include <rdma/fi_errno.h>
 
 
-void ofi_rbmap_init(struct ofi_rbmap *map)
+static struct ofi_rbnode *ofi_rbnode_alloc(struct ofi_rbmap *map)
 {
-	assert(map->compare);
+	struct ofi_rbnode *node;
+
+	if (!map->free_list)
+		return malloc(sizeof(*node));
+
+	node = map->free_list;
+	map->free_list = node->right;
+	return node;
+}
+
+static void ofi_rbnode_free(struct ofi_rbmap *map, struct ofi_rbnode *node)
+{
+	node->right = map->free_list ? map->free_list : NULL;
+	map->free_list = node;
+}
+
+void ofi_rbmap_init(struct ofi_rbmap *map,
+		int (*compare)(struct ofi_rbmap *map, void *key, void *data))
+{
+	map->compare = compare;
 
 	map->root = &map->sentinel;
 	map->sentinel.left = &map->sentinel;
@@ -60,6 +80,17 @@ void ofi_rbmap_init(struct ofi_rbmap *map)
 	map->sentinel.parent = NULL;
 	map->sentinel.color = BLACK;
 	map->sentinel.data = NULL;
+}
+
+struct ofi_rbmap *
+ofi_rbmap_create(int (*compare)(struct ofi_rbmap *map, void *key, void *data))
+{
+	struct ofi_rbmap *map;
+
+	map = calloc(1, sizeof *map);
+	if (map)
+		ofi_rbmap_init(map, compare);
+	return map;
 }
 
 static void ofi_delete_tree(struct ofi_rbmap *map, struct ofi_rbnode *node)
@@ -75,6 +106,18 @@ static void ofi_delete_tree(struct ofi_rbmap *map, struct ofi_rbnode *node)
 void ofi_rbmap_cleanup(struct ofi_rbmap *map)
 {
 	ofi_delete_tree(map, map->root);
+}
+
+void ofi_rbmap_destroy(struct ofi_rbmap *map)
+{
+	struct ofi_rbnode *node;
+
+	ofi_rbmap_cleanup(map);
+	while (map->free_list) {
+		node = map->free_list;
+		map->free_list = node->right;
+		free(node);
+	}
 	free(map);
 }
 
@@ -175,7 +218,8 @@ ofi_insert_rebalance(struct ofi_rbmap *map, struct ofi_rbnode *x)
 	map->root->color = BLACK;
 }
 
-int ofi_rbmap_insert(struct ofi_rbmap *map, void *key, void *data)
+int ofi_rbmap_insert(struct ofi_rbmap *map, void *key, void *data,
+		     struct ofi_rbnode **ret_node)
 {
 	struct ofi_rbnode *current, *parent, *node;
 	int ret;
@@ -192,7 +236,7 @@ int ofi_rbmap_insert(struct ofi_rbmap *map, void *key, void *data)
 		current = (ret < 0) ? current->left : current->right;
 	}
 
-	node = malloc(sizeof(*node));
+	node = ofi_rbnode_alloc(map);
 	if (!node)
 		return -FI_ENOMEM;
 
@@ -212,6 +256,8 @@ int ofi_rbmap_insert(struct ofi_rbmap *map, void *key, void *data)
 	}
 
 	ofi_insert_rebalance(map, node);
+	if (ret_node)
+		*ret_node = node;
 	return 0;
 }
 
@@ -273,22 +319,43 @@ static void ofi_delete_rebalance(struct ofi_rbmap *map, struct ofi_rbnode *node)
 	node->color = BLACK;
 }
 
+static void ofi_rbmap_replace_node_ptr(struct ofi_rbmap *map,
+		struct ofi_rbnode *old_node, struct ofi_rbnode *new_node)
+{
+	if (new_node == old_node)
+		return;
+
+	*new_node = *old_node;
+
+	if (!old_node->parent)
+		map->root = new_node;
+	else if (old_node == old_node->parent->left)
+		old_node->parent->left = new_node;
+	else
+		old_node->parent->right = new_node;
+
+	if (old_node->left != &map->sentinel)
+		old_node->left->parent = new_node;
+	if (old_node->right != &map->sentinel)
+		old_node->right->parent = new_node;
+}
+
 void ofi_rbmap_delete(struct ofi_rbmap *map, struct ofi_rbnode *node)
 {
 	struct ofi_rbnode *x, *y;
 
-	if (node->left == &map->sentinel || node->right == &map->sentinel) {
+	if (node->left == &map->sentinel) {
 		y = node;
+		x = y->right;
+	} else if (node->right == &map->sentinel) {
+		y = node;
+		x = y->left;
 	} else {
 		y = node->right;
 		while (y->left != &map->sentinel)
 			y = y->left;
-	}
-
-	if (y->left != &map->sentinel)
-		x = y->left;
-	else
 		x = y->right;
+	}
 
 	x->parent = y->parent;
 	if (y->parent) {
@@ -306,7 +373,9 @@ void ofi_rbmap_delete(struct ofi_rbmap *map, struct ofi_rbnode *node)
 	if (y->color == BLACK)
 		ofi_delete_rebalance(map, x);
 
-	free (y);
+	/* swap y in for node, so we can free node */
+	ofi_rbmap_replace_node_ptr(map, node, y);
+	ofi_rbnode_free(map, node);
 }
 
 struct ofi_rbnode *ofi_rbmap_find(struct ofi_rbmap *map, void *key)
@@ -317,6 +386,35 @@ struct ofi_rbnode *ofi_rbmap_find(struct ofi_rbmap *map, void *key)
 	node = map->root;
 	while (node != &map->sentinel) {
 		ret = map->compare(map, key, node->data);
+		if (ret == 0)
+			return node;
+
+		node = (ret < 0) ? node->left : node->right;
+	}
+	return NULL;
+}
+
+int ofi_rbmap_find_delete(struct ofi_rbmap *map, void *key)
+{
+	struct ofi_rbnode *node;
+
+	node = ofi_rbmap_find(map, key);
+	if (!node)
+		return -FI_ENODATA;
+
+	ofi_rbmap_delete(map, node);
+	return 0;
+}
+
+struct ofi_rbnode *ofi_rbmap_search(struct ofi_rbmap *map, void *key,
+		int (*compare)(struct ofi_rbmap *map, void *key, void *data))
+{
+	struct ofi_rbnode *node;
+	int ret;
+
+	node = map->root;
+	while (node != &map->sentinel) {
+		ret = compare(map, key, node->data);
 		if (ret == 0)
 			return node;
 

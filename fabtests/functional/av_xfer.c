@@ -49,7 +49,7 @@ static int av_removal_test(void)
 
 	ret = ft_init_fabric();
 	if (ret)
-		return ret;
+		goto out;
 
 	if (opts.dst_addr) {
 		ret = ft_tx(ep, remote_fi_addr, opts.transfer_size, &tx_ctx);
@@ -197,7 +197,7 @@ int main(int argc, char **argv)
 	int op, ret;
 
 	opts = INIT_OPTS;
-	opts.options |= FT_OPT_SIZE | FT_OPT_OOB_SYNC;
+	opts.options |= FT_OPT_SIZE | FT_OPT_OOB_CTRL;
 
 	hints = fi_allocinfo();
 	if (!hints)
@@ -209,7 +209,7 @@ int main(int argc, char **argv)
 		switch (op) {
 		default:
 			ft_parse_addr_opts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			break;
 		case '?':
 		case 'h':
@@ -224,7 +224,7 @@ int main(int argc, char **argv)
 	hints->caps = hints->ep_attr->type == FI_EP_RDM ?
 		      FI_TAGGED : FI_MSG;
 	hints->mode = FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 	base_hints = hints;
 
 	ret = av_removal_test();

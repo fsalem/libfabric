@@ -6,10 +6,12 @@
 # av_test supports only FI_SOCKADDR
 av_test
 
-^msg|-e msg
+^fi_msg
+-e msg
 
 cm_data
 shared_ctx
 scalable_ep
 shared_av
 rdm_cntr_pingpong
+multi_recv

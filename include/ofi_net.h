@@ -45,6 +45,7 @@
 #include <ifaddrs.h>
 
 #include <ofi_osd.h>
+#include <ofi_list.h>
 
 #include <rdma/fabric.h>
 #include <rdma/providers/fi_prov.h>
@@ -124,6 +125,8 @@ int ofi_discard_socket(SOCKET sock, size_t len);
 #define AF_IB 27
 #endif
 
+#define OFI_ADDRSTRLEN (INET6_ADDRSTRLEN + 50)
+
 union ofi_sock_ip {
 	struct sockaddr		sa;
 	struct sockaddr_in	sin;
@@ -131,9 +134,24 @@ union ofi_sock_ip {
 	uint8_t			align[32];
 };
 
+struct ofi_addr_list_entry {
+	struct slist_entry	entry;
+	char			ipstr[INET6_ADDRSTRLEN];
+	union ofi_sock_ip	ipaddr;
+	size_t			speed;
+	char			net_name[OFI_ADDRSTRLEN];
+	char			ifa_name[OFI_ADDRSTRLEN];
+};
+
 int ofi_addr_cmp(const struct fi_provider *prov, const struct sockaddr *sa1,
 		const struct sockaddr *sa2);
 int ofi_getifaddrs(struct ifaddrs **ifap);
+
+void ofi_set_netmask_str(char *netstr, size_t len, struct ifaddrs *ifa);
+
+void ofi_get_list_of_addr(const struct fi_provider *prov, const char *env_name,
+			  struct slist *addr_list);
+void ofi_free_list_of_addr(struct slist *addr_list);
 
 #define ofi_sa_family(addr) ((struct sockaddr *)(addr))->sa_family
 #define ofi_sin_addr(addr) (((struct sockaddr_in *)(addr))->sin_addr)
@@ -142,7 +160,6 @@ int ofi_getifaddrs(struct ifaddrs **ifap);
 #define ofi_sin6_addr(addr) (((struct sockaddr_in6 *)(addr))->sin6_addr)
 #define ofi_sin6_port(addr) (((struct sockaddr_in6 *)(addr))->sin6_port)
 
-#define OFI_ADDRSTRLEN (INET6_ADDRSTRLEN + 50)
 
 static inline size_t ofi_sizeofaddr(const struct sockaddr *addr)
 {
@@ -152,7 +169,7 @@ static inline size_t ofi_sizeofaddr(const struct sockaddr *addr)
 	case AF_INET6:
 		return sizeof(struct sockaddr_in6);
 	default:
-		FI_WARN(&core_prov, FI_LOG_CORE, "Unknown address format");
+		FI_WARN(&core_prov, FI_LOG_CORE, "Unknown address format\n");
 		return 0;
 	}
 }
@@ -165,7 +182,7 @@ static inline size_t ofi_sizeofip(const struct sockaddr *addr)
 	case AF_INET6:
 		return sizeof(struct in6_addr);
 	default:
-		FI_WARN(&core_prov, FI_LOG_CORE, "Unknown address format");
+		FI_WARN(&core_prov, FI_LOG_CORE, "Unknown address format\n");
 		return 0;
 	}
 }

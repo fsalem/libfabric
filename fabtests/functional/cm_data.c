@@ -155,6 +155,8 @@ static int server_reject(size_t paramlen)
 	if (ret)
 		FT_PRINTERR("fi_reject", ret);
 
+	fi_freeinfo(fi);
+	fi = NULL;
 	return ret;
 }
 
@@ -184,7 +186,7 @@ static int server_accept(size_t paramlen)
 		FT_PRINTERR("init_ep", ret);
 		goto err;
 	}
-	/* Data will apppear on accept event on remote end. */
+	/* Data will appear on accept event on remote end. */
 	ft_fill_buf(cm_data, paramlen);
 
 	/* Accept the incoming connection. Also transitions endpoint to active
@@ -222,7 +224,15 @@ static int server_accept(size_t paramlen)
 	FT_CLOSE_FID(rxcntr);
 	FT_CLOSE_FID(txcntr);
 	FT_CLOSE_FID(av);
+	if (mr != &no_mr)
+		FT_CLOSE_FID(mr);
 	FT_CLOSE_FID(domain);
+
+	free(buf);
+	buf = rx_buf = tx_buf = NULL;
+	buf_size = rx_size = tx_size = 0;
+	fi_freeinfo(fi);
+	fi = NULL;
 
 	return 0;
 
@@ -459,7 +469,7 @@ int main(int argc, char **argv)
 			break;
 		default:
 			ft_parse_addr_opts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			break;
 		case '?':
 		case 'h':
@@ -475,7 +485,7 @@ int main(int argc, char **argv)
 
 	hints->ep_attr->type	= FI_EP_MSG;
 	hints->caps		= FI_MSG;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 
 	ret = run();
 

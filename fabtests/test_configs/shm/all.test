@@ -15,9 +15,6 @@
 	ep_type: [
 		FI_EP_RDM,
 	],
-	mode: [
-		FT_MODE_ALL,
-	],
 	test_class: [
 		FT_CAP_MSG,
 		FT_CAP_TAGGED,
@@ -36,6 +33,90 @@
 		FT_TEST_BANDWIDTH,
 	],
 	class_function: [
+		FT_FUNC_SENDMSG,
+	],
+	ep_type: [
+		FI_EP_RDM,
+	],
+	test_class: [
+		FT_CAP_MSG,
+		FT_CAP_TAGGED,
+	],
+	comp_type: [
+		FT_COMP_QUEUE,
+		FT_COMP_CNTR,
+	],
+	tx_cq_bind_flags: [
+		FI_SELECTIVE_COMPLETION,
+	],
+	tx_op_flags: [
+		FI_COMPLETION,
+	],
+	msg_flags: [
+		FI_COMPLETION,
+	],
+},
+{
+	prov_name: shm,
+	test_type: [
+		FT_TEST_LATENCY,
+		FT_TEST_BANDWIDTH,
+	],
+	class_function: [
+		FT_FUNC_SENDMSG,
+	],
+	ep_type: [
+		FI_EP_RDM,
+	],
+	test_class: [
+		FT_CAP_MSG,
+		FT_CAP_TAGGED,
+	],
+	comp_type: [
+		FT_COMP_QUEUE,
+		FT_COMP_CNTR,
+	],
+	tx_cq_bind_flags: [
+		FI_SELECTIVE_COMPLETION,
+	],
+	msg_flags: [
+		FI_COMPLETION,
+	],
+},
+{
+	prov_name: shm,
+	test_type: [
+		FT_TEST_LATENCY,
+		FT_TEST_BANDWIDTH,
+	],
+	class_function: [
+		FT_FUNC_SENDMSG,
+	],
+	ep_type: [
+		FI_EP_RDM,
+	],
+	test_class: [
+		FT_CAP_MSG,
+		FT_CAP_TAGGED,
+	],
+	comp_type: [
+		FT_COMP_QUEUE,
+		FT_COMP_CNTR,
+	],
+	tx_cq_bind_flags: [
+		FI_SELECTIVE_COMPLETION,
+	],
+	tx_op_flags: [
+		FI_COMPLETION,
+	],
+},
+{
+	prov_name: shm,
+	test_type: [
+		FT_TEST_LATENCY,
+		FT_TEST_BANDWIDTH,
+	],
+	class_function: [
 		FT_FUNC_WRITE,
 		FT_FUNC_WRITEV,
 		FT_FUNC_WRITEMSG,
@@ -49,14 +130,12 @@
 	ep_type: [
 		FI_EP_RDM,
 	],
-	mode: [
-		FT_MODE_ALL,
-	],
 	test_class: [
 		FT_CAP_RMA,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
+		FT_COMP_CNTR,
 	],
 	mr_mode: [
 		FI_MR_VIRT_ADDR,
@@ -82,9 +161,6 @@
 	ep_type: [
 		FI_EP_RDM,
 	],
-	mode: [
-		FT_MODE_ALL,
-	],
 	test_class: [
 		FT_CAP_RMA,
 	],
@@ -100,50 +176,30 @@
 	],
 	class_function: [
 		FT_FUNC_ATOMIC,
-		FT_FUNC_ATOMICV,
-		FT_FUNC_ATOMICMSG,
 		FT_FUNC_FETCH_ATOMIC,
-		FT_FUNC_FETCH_ATOMICV,
-		FT_FUNC_FETCH_ATOMICMSG,
-		FT_FUNC_INJECT_ATOMIC,
 	],
 	op:[
 		FI_MIN,
-		FI_MAX,
 		FI_SUM,
-		FI_PROD,
 		FI_LOR,
-		FI_LAND,
-		FI_BOR,
 		FI_BAND,
 		FI_LXOR,
-		FI_BXOR,
 		FI_ATOMIC_WRITE,
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,
@@ -169,28 +225,18 @@
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,
@@ -208,8 +254,6 @@
 	],
 	class_function: [
 		FT_FUNC_COMPARE_ATOMIC,
-		FT_FUNC_COMPARE_ATOMICV,
-		FT_FUNC_COMPARE_ATOMICMSG,
 	],
 	op:[
 		FI_CSWAP,
@@ -222,28 +266,18 @@
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,
@@ -261,50 +295,30 @@
 	],
 	class_function: [
 		FT_FUNC_ATOMIC,
-		FT_FUNC_ATOMICV,
-		FT_FUNC_ATOMICMSG,
 		FT_FUNC_FETCH_ATOMIC,
-		FT_FUNC_FETCH_ATOMICV,
-		FT_FUNC_FETCH_ATOMICMSG,
-		FT_FUNC_INJECT_ATOMIC,
 	],
 	op:[
 		FI_MIN,
-		FI_MAX,
 		FI_SUM,
-		FI_PROD,
 		FI_LOR,
-		FI_LAND,
-		FI_BOR,
 		FI_BAND,
 		FI_LXOR,
-		FI_BXOR,
 		FI_ATOMIC_WRITE,
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,
@@ -319,36 +333,24 @@
 	],
 	class_function: [
 		FT_FUNC_FETCH_ATOMIC,
-		FT_FUNC_FETCH_ATOMICV,
-		FT_FUNC_FETCH_ATOMICMSG,
 	],
 	op:[
 		FI_ATOMIC_READ,
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,
@@ -363,8 +365,6 @@
 	],
 	class_function: [
 		FT_FUNC_COMPARE_ATOMIC,
-		FT_FUNC_COMPARE_ATOMICV,
-		FT_FUNC_COMPARE_ATOMICMSG,
 	],
 	op:[
 		FI_CSWAP,
@@ -377,28 +377,18 @@
 	],
 	datatype:[
 		FI_INT8,
-		FI_UINT8,
 		FI_INT16,
-		FI_UINT16,
 		FI_INT32,
-		FI_UINT32,
 		FI_INT64,
-		FI_UINT64,
 		FI_FLOAT,
-		FI_DOUBLE,
 		FI_LONG_DOUBLE,
-		FI_FLOAT_COMPLEX,
 		FI_DOUBLE_COMPLEX,
-		FI_LONG_DOUBLE_COMPLEX,
 	],
 	ep_type: [
 		FI_EP_RDM,
 	],
 	comp_type: [
 		FT_COMP_QUEUE,
-	],
-	mode: [
-		FT_MODE_ALL,
 	],
 	test_class: [
 		FT_CAP_ATOMIC,

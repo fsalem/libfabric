@@ -49,7 +49,7 @@ extern "C" {
 #endif
 
 #ifndef FT_FIVERSION
-#define FT_FIVERSION FI_VERSION(1,5)
+#define FT_FIVERSION FI_VERSION(1,9)
 #endif
 
 #include "ft_osd.h"
@@ -65,13 +65,10 @@ static inline int ft_exit_code(int ret)
 	return absret > 255 ? EXIT_FAILURE : absret;
 }
 
-#define ft_foreach_info(fi, info) \
-	for (fi = info; fi; fi = fi->next)
-
 #define ft_sa_family(addr) (((struct sockaddr *)(addr))->sa_family)
 
 struct test_size_param {
-	int size;
+	size_t size;
 	int enable_flags;
 };
 
@@ -81,13 +78,6 @@ extern const unsigned int test_cnt;
 
 #define FT_ENABLE_ALL		(~0)
 #define FT_DEFAULT_SIZE		(1 << 0)
-
-static inline int ft_use_size(int index, int enable_flags)
-{
-	return (enable_flags == FT_ENABLE_ALL) ||
-		(enable_flags & test_size[index].enable_flags);
-}
-
 
 enum precision {
 	NANO = 1,
@@ -99,7 +89,8 @@ enum ft_comp_method {
 	FT_COMP_SPIN = 0,
 	FT_COMP_SREAD,
 	FT_COMP_WAITSET,
-	FT_COMP_WAIT_FD
+	FT_COMP_WAIT_FD,
+	FT_COMP_YIELD,
 };
 
 enum {
@@ -117,6 +108,10 @@ enum {
 	FT_OPT_OOB_SYNC		= 1 << 11,
 	FT_OPT_SKIP_MSG_ALLOC	= 1 << 12,
 	FT_OPT_SKIP_REG_MR	= 1 << 13,
+	FT_OPT_OOB_ADDR_EXCH	= 1 << 14,
+	FT_OPT_ALLOC_MULT_MR	= 1 << 15,
+	FT_OPT_SERVER_PERSIST	= 1 << 16,
+	FT_OPT_OOB_CTRL		= FT_OPT_OOB_SYNC | FT_OPT_OOB_ADDR_EXCH,
 };
 
 /* for RMA tests --- we want to be able to select fi_writedata, but there is no
@@ -133,10 +128,23 @@ enum ft_atomic_opcodes {
 	FT_ATOMIC_COMPARE,
 };
 
+enum op_state {
+	OP_DONE = 0,
+	OP_PENDING
+};
+
+struct ft_context {
+	char *buf;
+	void *desc;
+	enum op_state state;
+	struct fid_mr *mr;
+	struct fi_context2 context;
+};
+
 struct ft_opts {
 	int iterations;
 	int warmup_iterations;
-	int transfer_size;
+	size_t transfer_size;
 	int window_size;
 	int av_size;
 	int verbose;
@@ -154,7 +162,9 @@ struct ft_opts {
 	enum ft_rma_opcodes rma_op;
 	char *oob_port;
 	int argc;
+	int num_connections;
 
+	uint64_t mr_mode;
 	/* Fail if the selected provider does not support FI_MSG_PREFIX.  */
 	int force_prefix;
 	char **argv;
@@ -177,12 +187,13 @@ extern struct fid_mc *mc;
 
 extern fi_addr_t remote_fi_addr;
 extern char *buf, *tx_buf, *rx_buf;
-extern size_t buf_size, tx_size, rx_size;
+extern struct ft_context *tx_ctx_arr, *rx_ctx_arr;
+extern char **tx_mr_bufs, **rx_mr_bufs;
+extern size_t buf_size, tx_size, rx_size, tx_mr_size, rx_mr_size;
 extern int tx_fd, rx_fd;
 extern int timeout;
 
 extern struct fi_context tx_ctx, rx_ctx;
-extern struct fi_context *tx_ctx_arr, *rx_ctx_arr;
 extern uint64_t remote_cq_data;
 
 extern uint64_t tx_seq, rx_seq, tx_cq_cntr, rx_cq_cntr;
@@ -197,7 +208,8 @@ extern char test_name[50];
 extern struct timespec start, end;
 extern struct ft_opts opts;
 
-void ft_parseinfo(int op, char *optarg, struct fi_info *hints);
+void ft_parseinfo(int op, char *optarg, struct fi_info *hints,
+		  struct ft_opts *opts);
 void ft_parse_addr_opts(int op, char *optarg, struct ft_opts *opts);
 void ft_parsecsopts(int op, char *optarg, struct ft_opts *opts);
 int ft_parse_rma_opts(int op, char *optarg, struct fi_info *hints,
@@ -224,9 +236,9 @@ extern int ft_parent_proc;
 extern int ft_socket_pair[2];
 extern int sock;
 extern int listen_sock;
-#define ADDR_OPTS "B:P:s:a:b::"
+#define ADDR_OPTS "B:P:s:a:b::E::C:"
 #define FAB_OPTS "f:d:p:"
-#define INFO_OPTS FAB_OPTS "e:"
+#define INFO_OPTS FAB_OPTS "e:M:"
 #define CS_OPTS ADDR_OPTS "I:S:mc:t:w:l"
 #define NO_CQ_DATA 0
 
@@ -245,12 +257,15 @@ extern char default_port[8];
 		.sizes_enabled = FT_DEFAULT_SIZE, \
 		.rma_op = FT_RMA_WRITE, \
 		.oob_port = NULL, \
+		.mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP, \
 		.argc = argc, .argv = argv \
 	}
 
 #define FT_STR_LEN 32
-#define FT_MAX_CTRL_MSG 64
+#define FT_MAX_CTRL_MSG 256
 #define FT_MR_KEY 0xC0DE
+#define FT_TX_MR_KEY (FT_MR_KEY + 1)
+#define FT_RX_MR_KEY 0xFFFF
 #define FT_MSG_MR_ACCESS (FI_SEND | FI_RECV)
 #define FT_RMA_MR_ACCESS (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
 
@@ -261,6 +276,13 @@ char *size_str(char str[FT_STR_LEN], long long size);
 char *cnt_str(char str[FT_STR_LEN], long long cnt);
 int size_to_count(int size);
 size_t datatype_to_size(enum fi_datatype datatype);
+
+static inline int ft_use_size(int index, int enable_flags)
+{
+	return test_size[index].size <= fi->ep_attr->max_msg_size &&
+		((enable_flags == FT_ENABLE_ALL) ||
+		(enable_flags & test_size[index].enable_flags));
+}
 
 #define FT_PRINTERR(call, retv) \
 	do { fprintf(stderr, call "(): %s:%d, ret=%d (%s)\n", __FILE__, __LINE__, \
@@ -331,6 +353,7 @@ int ft_alloc_bufs();
 int ft_open_fabric_res();
 int ft_getinfo(struct fi_info *hints, struct fi_info **info);
 int ft_init_fabric();
+int ft_init_oob();
 int ft_start_server();
 int ft_server_connect();
 int ft_client_connect();
@@ -404,16 +427,16 @@ int ft_finalize_ep(struct fid_ep *ep);
 
 size_t ft_rx_prefix_size(void);
 size_t ft_tx_prefix_size(void);
-ssize_t ft_post_rx(struct fid_ep *ep, size_t size, struct fi_context* ctx);
-ssize_t ft_post_rx_buf(struct fid_ep *ep, size_t size, struct fi_context* ctx,
+ssize_t ft_post_rx(struct fid_ep *ep, size_t size, void *ctx);
+ssize_t ft_post_rx_buf(struct fid_ep *ep, size_t size, void *ctx,
 		       void *op_buf, void *op_mr_desc, uint64_t op_tag);
 ssize_t ft_post_tx(struct fid_ep *ep, fi_addr_t fi_addr, size_t size,
-		uint64_t data, struct fi_context* ctx);
+		uint64_t data, void *ctx);
 ssize_t ft_post_tx_buf(struct fid_ep *ep, fi_addr_t fi_addr, size_t size,
-		       uint64_t data, struct fi_context* ctx,
+		       uint64_t data, void *ctx,
 		       void *op_buf, void *op_mr_desc, uint64_t op_tag);
 ssize_t ft_rx(struct fid_ep *ep, size_t size);
-ssize_t ft_tx(struct fid_ep *ep, fi_addr_t fi_addr, size_t size, struct fi_context *ctx);
+ssize_t ft_tx(struct fid_ep *ep, fi_addr_t fi_addr, size_t size, void *ctx);
 ssize_t ft_inject(struct fid_ep *ep, fi_addr_t fi_addr, size_t size);
 ssize_t ft_post_rma(enum ft_rma_opcodes op, struct fid_ep *ep, size_t size,
 		struct fi_rma_iov *remote, void *context);
@@ -439,23 +462,25 @@ int ft_cq_readerr(struct fid_cq *cq);
 int ft_get_rx_comp(uint64_t total);
 int ft_get_tx_comp(uint64_t total);
 int ft_recvmsg(struct fid_ep *ep, fi_addr_t fi_addr,
-		size_t size, struct fi_context *ctx, int flags);
+		size_t size, void *ctx, int flags);
 int ft_sendmsg(struct fid_ep *ep, fi_addr_t fi_addr,
-		size_t size, struct fi_context *ctx, int flags);
+		size_t size, void *ctx, int flags);
 int ft_cq_read_verify(struct fid_cq *cq, void *op_context);
 
 void eq_readerr(struct fid_eq *eq, const char *eq_str);
 
 int64_t get_elapsed(const struct timespec *b, const struct timespec *a,
 		enum precision p);
-void show_perf(char *name, int tsize, int iters, struct timespec *start,
+void show_perf(char *name, size_t tsize, int iters, struct timespec *start,
 		struct timespec *end, int xfers_per_iter);
-void show_perf_mr(int tsize, int iters, struct timespec *start,
+void show_perf_mr(size_t tsize, int iters, struct timespec *start,
 		struct timespec *end, int xfers_per_iter, int argc, char *argv[]);
 
 int ft_send_recv_greeting(struct fid_ep *ep);
 int ft_send_greeting(struct fid_ep *ep);
 int ft_recv_greeting(struct fid_ep *ep);
+
+int ft_accept_next_client();
 
 int check_recv_msg(const char *message);
 uint64_t ft_info_to_mr_access(struct fi_info *info);

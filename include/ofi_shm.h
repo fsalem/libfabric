@@ -76,6 +76,9 @@ enum {
 
 #define SMR_REMOTE_CQ_DATA	(1 << 0)
 #define SMR_RMA_REQ		(1 << 1)
+#define SMR_TX_COMPLETION	(1 << 2)
+#define SMR_RX_COMPLETION	(1 << 3)
+#define SMR_MULTI_RECV		(1 << 4)
 
 /* 
  * Unique smr_op_hdr for smr message protocol:
@@ -105,13 +108,13 @@ struct smr_msg_hdr {
 	};
 };
 
-#define SMR_MSG_DATA_LEN	(128 - sizeof(struct smr_msg_hdr))
+#define SMR_MSG_DATA_LEN	(SMR_CMD_SIZE - sizeof(struct smr_msg_hdr))
 #define SMR_COMP_DATA_LEN	(SMR_MSG_DATA_LEN / 2)
 union smr_cmd_data {
 	uint8_t			msg[SMR_MSG_DATA_LEN];
 	struct {
-		uint8_t		iov_count;
-		struct iovec	iov[(SMR_MSG_DATA_LEN - 8) /
+		size_t		iov_count;
+		struct iovec	iov[(SMR_MSG_DATA_LEN - sizeof(size_t)) /
 				    sizeof(struct iovec)];
 	};
 	struct {
@@ -146,11 +149,18 @@ struct smr_cmd {
 #define SMR_INJECT_SIZE		4096
 #define SMR_COMP_INJECT_SIZE	(SMR_INJECT_SIZE / 2)
 
-#define SMR_NAME_SIZE	32
 struct smr_addr {
-	char		name[SMR_NAME_SIZE];
+	char		name[NAME_MAX];
 	fi_addr_t	addr;
 };
+
+
+struct smr_ep_name {
+	char name[NAME_MAX];
+	struct dlist_entry entry;
+};
+
+extern struct dlist_entry ep_name_list;
 
 struct smr_region;
 
@@ -247,6 +257,7 @@ struct smr_attr {
 	size_t		tx_count;
 };
 
+void	smr_cleanup(void);
 int	smr_map_create(const struct fi_provider *prov, int peer_count,
 		       struct smr_map **map);
 int	smr_map_to_region(const struct fi_provider *prov,

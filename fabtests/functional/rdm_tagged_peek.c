@@ -107,9 +107,6 @@ static int run(void)
 	if (ret)
 		return ret;
 
-	if (!(tx_ctx_arr = calloc(5, sizeof *tx_ctx_arr)))
-		return -FI_ENOMEM;
-
 	if (opts.dst_addr) {
 		printf("Searching for a bad msg\n");
 		ret = tag_queue_op(0xbad, 0, FI_PEEK);
@@ -193,7 +190,7 @@ static int run(void)
 		 * maintained by common code */
 		ret = fi_tsend(ep, tx_buf, 1, mr_desc,
 				remote_fi_addr, 0xabc,
-				&tx_ctx_arr[0]);
+				&tx_ctx_arr[0].context);
 		if (ret)
 			return ret;
 		ret = wait_for_send_comp(1);
@@ -204,7 +201,7 @@ static int run(void)
 		for(i = 0; i < 5; i++) {
 			ret = fi_tsend(ep, tx_buf, tx_size, mr_desc,
 				       remote_fi_addr, 0x900d+i,
-				       &tx_ctx_arr[i]);
+				       &tx_ctx_arr[i].context);
 			if (ret)
 				return ret;
 		}
@@ -230,6 +227,7 @@ int main(int argc, char **argv)
 	opts = INIT_OPTS;
 	opts.options |= FT_OPT_SIZE;
 	opts.comp_method = FT_COMP_SREAD;
+	opts.window_size = 5;
 
 	hints = fi_allocinfo();
 	if (!hints) {
@@ -241,7 +239,7 @@ int main(int argc, char **argv)
 		switch (op) {
 		default:
 			ft_parsecsopts(op, optarg, &opts);
-			ft_parseinfo(op, optarg, hints);
+			ft_parseinfo(op, optarg, hints, &opts);
 			break;
 		case '?':
 		case 'h':
@@ -258,7 +256,7 @@ int main(int argc, char **argv)
 	hints->ep_attr->type = FI_EP_RDM;
 	hints->caps = FI_TAGGED;
 	hints->mode = FI_CONTEXT;
-	hints->domain_attr->mr_mode = FI_MR_LOCAL | OFI_MR_BASIC_MAP;
+	hints->domain_attr->mr_mode = opts.mr_mode;
 
 	ret = run();
 

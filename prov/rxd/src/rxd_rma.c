@@ -36,6 +36,53 @@
 #include <ofi_iov.h>
 #include "rxd.h"
 
+static struct rxd_x_entry *rxd_tx_entry_init_rma(struct rxd_ep *ep, fi_addr_t addr,
+				uint32_t op, const struct iovec *iov, size_t iov_count,
+				uint64_t data, uint32_t flags, void *context,
+				const struct fi_rma_iov *rma_iov, size_t rma_count)
+{
+	struct rxd_x_entry *tx_entry;
+	struct rxd_domain *rxd_domain = rxd_ep_domain(ep);
+	size_t max_inline;
+	struct rxd_base_hdr *base_hdr;
+	void *ptr;
+
+	tx_entry = rxd_tx_entry_init_common(ep, addr, op, iov, iov_count, 0,
+					    data, flags, context, &base_hdr, &ptr);
+	if (!tx_entry)
+		return NULL;
+
+	if (tx_entry->cq_entry.flags & FI_READ) {
+		tx_entry->num_segs = ofi_div_ceil(tx_entry->cq_entry.len,
+						  rxd_domain->max_seg_sz);
+		rxd_init_sar_hdr(&ptr, tx_entry, rma_count);
+		rxd_init_rma_hdr(&ptr, rma_iov, rma_count);
+	} else {
+		max_inline = rxd_domain->max_inline_msg;
+		max_inline -= sizeof(struct ofi_rma_iov) * rma_count;
+		rxd_check_init_cq_data(&ptr, tx_entry, &max_inline);
+
+		if (rma_count > 1 || tx_entry->cq_entry.len > max_inline) {
+			max_inline -= sizeof(struct rxd_sar_hdr);
+			tx_entry->num_segs = ofi_div_ceil(tx_entry->cq_entry.len -
+				max_inline, rxd_domain->max_seg_sz) + 1;
+			rxd_init_sar_hdr(&ptr, tx_entry, rma_count);
+		} else {
+			tx_entry->flags |= RXD_INLINE;
+			base_hdr->flags = tx_entry->flags;
+			tx_entry->num_segs = 1;
+		}
+		rxd_init_rma_hdr(&ptr, rma_iov, rma_count);
+		tx_entry->bytes_done = rxd_init_msg(&ptr, tx_entry->iov,
+			tx_entry->iov_count, tx_entry->cq_entry.len,
+			max_inline);
+	}
+
+	tx_entry->pkt->pkt_size = rxd_pkt_size(ep, base_hdr, ptr);
+
+	return tx_entry;
+}
+
 static ssize_t rxd_generic_write_inject(struct rxd_ep *rxd_ep,
 		const struct iovec *iov, size_t iov_count,
 		const struct fi_rma_iov *rma_iov, size_t rma_count,
@@ -50,36 +97,32 @@ static ssize_t rxd_generic_write_inject(struct rxd_ep *rxd_ep,
 	assert(ofi_total_iov_len(iov, iov_count) <= rxd_ep_domain(rxd_ep)->max_inline_rma);
 
 	fastlock_acquire(&rxd_ep->util_ep.lock);
-	fastlock_acquire(&rxd_ep->util_ep.tx_cq->cq_lock);
 
-	if (ofi_cirque_isfull(rxd_ep->util_ep.tx_cq->cirq)) {
-		ret = -FI_EAGAIN;
+	if (ofi_cirque_isfull(rxd_ep->util_ep.tx_cq->cirq))
 		goto out;
-	}
 
 	rxd_addr = rxd_ep_av(rxd_ep)->fi_addr_table[addr];
 	ret = rxd_send_rts_if_needed(rxd_ep, rxd_addr);
 	if (ret)
 		goto out;
 
-	tx_entry = rxd_tx_entry_init(rxd_ep, iov, iov_count, NULL, 0, rma_count, data,
-				     0, context, rxd_addr, op, rxd_flags);
-	if (!tx_entry)
-		goto out;
-
-	ret = rxd_ep_send_op(rxd_ep, tx_entry, rma_iov, rma_count, NULL, 0, 0, 0);
-	if (ret) {
-		rxd_tx_entry_free(rxd_ep, tx_entry);
+	tx_entry = rxd_tx_entry_init_rma(rxd_ep, rxd_addr, op, iov, iov_count,
+					 data, rxd_flags, context, rma_iov,
+					 rma_count);
+	if (!tx_entry) {
+		ret = -FI_EAGAIN;
 		goto out;
 	}
 
-	if (tx_entry->op == RXD_READ_REQ)
+	if (rxd_ep->peers[rxd_addr].peer_addr == FI_ADDR_UNSPEC)
 		goto out;
 
+	ret = rxd_start_xfer(rxd_ep, tx_entry);
+	if (ret && tx_entry->num_segs > 1)
+		(void) rxd_ep_post_data_pkts(rxd_ep, tx_entry);
 	ret = 0;
 
 out:
-	fastlock_release(&rxd_ep->util_ep.tx_cq->cq_lock);
 	fastlock_release(&rxd_ep->util_ep.lock);
 	return ret;
 }
@@ -101,29 +144,32 @@ ssize_t rxd_generic_rma(struct rxd_ep *rxd_ep, const struct iovec *iov,
 	assert(iov_count <= RXD_IOV_LIMIT && rma_count <= RXD_IOV_LIMIT);
 
 	fastlock_acquire(&rxd_ep->util_ep.lock);
-	fastlock_acquire(&rxd_ep->util_ep.tx_cq->cq_lock);
 
-	if (ofi_cirque_isfull(rxd_ep->util_ep.tx_cq->cirq)) {
-		ret = -FI_EAGAIN;
+	if (ofi_cirque_isfull(rxd_ep->util_ep.tx_cq->cirq))
 		goto out;
-	}
 
 	rxd_addr = rxd_ep_av(rxd_ep)->fi_addr_table[addr];
 	ret = rxd_send_rts_if_needed(rxd_ep, rxd_addr);
 	if (ret)
 		goto out;
 
-	tx_entry = rxd_tx_entry_init(rxd_ep, iov, iov_count, NULL, 0, rma_count,
-				     data, 0, context, rxd_addr, op, rxd_flags);
-	if (!tx_entry)
+	tx_entry = rxd_tx_entry_init_rma(rxd_ep, rxd_addr, op, iov, iov_count,
+					 data, rxd_flags, context, rma_iov,
+					 rma_count);
+	if (!tx_entry) {
+		ret = -FI_EAGAIN;
+		goto out;
+	}
+
+	if (rxd_ep->peers[rxd_addr].peer_addr == FI_ADDR_UNSPEC)
 		goto out;
 
-	ret = rxd_ep_send_op(rxd_ep, tx_entry, rma_iov, rma_count, NULL, 0, 0, 0);
-	if (ret)
-		rxd_tx_entry_free(rxd_ep, tx_entry);
+	ret = rxd_start_xfer(rxd_ep, tx_entry);
+	if (ret && (tx_entry->cq_entry.flags & FI_WRITE) && tx_entry->num_segs > 1)
+		(void) rxd_ep_post_data_pkts(rxd_ep, tx_entry);
+	ret = 0;
 
 out:
-	fastlock_release(&rxd_ep->util_ep.tx_cq->cq_lock);
 	fastlock_release(&rxd_ep->util_ep.lock);
 	return ret;
 }
@@ -144,8 +190,8 @@ ssize_t rxd_read(struct fid_ep *ep_fid, void *buf, size_t len, void *desc,
 	rma_iov.key = key;
 
 	return rxd_generic_rma(ep, &msg_iov, 1, &rma_iov, 1, &desc, 
-			       src_addr, context, ofi_op_read_req, 0,
-			       rxd_ep_tx_flags(ep));
+			       src_addr, context, RXD_READ_REQ, 0,
+			       ep->tx_flags);
 }
 
 ssize_t rxd_readv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc,
@@ -162,8 +208,8 @@ ssize_t rxd_readv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc,
 	rma_iov.key = key;
 
 	return rxd_generic_rma(ep, iov, count, &rma_iov, 1, desc,
-			       src_addr, context, ofi_op_read_req, 0,
-			       rxd_ep_tx_flags(ep));
+			       src_addr, context, RXD_READ_REQ, 0,
+			       ep->tx_flags);
 }
 
 ssize_t rxd_readmsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg,
@@ -176,7 +222,8 @@ ssize_t rxd_readmsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg,
 	return rxd_generic_rma(ep, msg->msg_iov, msg->iov_count,
 			       msg->rma_iov, msg->rma_iov_count,
 			       msg->desc, msg->addr, msg->context,
-			       ofi_op_read_req, msg->data, rxd_flags(flags));
+			       RXD_READ_REQ, msg->data, rxd_tx_flags(flags |
+			       ep->util_ep.tx_msg_flags));
 }
 
 ssize_t rxd_write(struct fid_ep *ep_fid, const void *buf, size_t len, void *desc,
@@ -195,8 +242,8 @@ ssize_t rxd_write(struct fid_ep *ep_fid, const void *buf, size_t len, void *desc
 	rma_iov.key = key;
 
 	return rxd_generic_rma(ep, &msg_iov, 1, &rma_iov, 1, &desc, 
-			       dest_addr, context, ofi_op_write, 0,
-			       rxd_ep_tx_flags(ep));
+			       dest_addr, context, RXD_WRITE, 0,
+			       ep->tx_flags);
 }
 
 ssize_t rxd_writev(struct fid_ep *ep_fid, const struct iovec *iov, void **desc,
@@ -213,8 +260,8 @@ ssize_t rxd_writev(struct fid_ep *ep_fid, const struct iovec *iov, void **desc,
 	rma_iov.key = key;
 
 	return rxd_generic_rma(ep, iov, count, &rma_iov, 1, desc,
-			       dest_addr, context, ofi_op_write, 0,
-			       rxd_ep_tx_flags(ep));
+			       dest_addr, context, RXD_WRITE, 0,
+			       ep->tx_flags);
 }
 
 
@@ -228,7 +275,8 @@ ssize_t rxd_writemsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg,
 	return rxd_generic_rma(ep, msg->msg_iov, msg->iov_count,
 			       msg->rma_iov, msg->rma_iov_count,
 			       msg->desc, msg->addr, msg->context,
-			       ofi_op_write, msg->data, rxd_flags(flags));
+			       RXD_WRITE, msg->data, rxd_tx_flags(flags |
+			       ep->util_ep.tx_msg_flags));
 }
 
 ssize_t rxd_writedata(struct fid_ep *ep_fid, const void *buf, size_t len,
@@ -248,8 +296,8 @@ ssize_t rxd_writedata(struct fid_ep *ep_fid, const void *buf, size_t len,
 	rma_iov.key = key;
 
 	return rxd_generic_rma(ep, &iov, 1, &rma_iov, 1, &desc,
-			       dest_addr, context, ofi_op_write, data,
-			       rxd_ep_tx_flags(ep) | RXD_REMOTE_CQ_DATA);
+			       dest_addr, context, RXD_WRITE, data,
+			       ep->tx_flags | RXD_REMOTE_CQ_DATA);
 }
 
 ssize_t rxd_inject_write(struct fid_ep *ep_fid, const void *buf,
@@ -268,7 +316,7 @@ ssize_t rxd_inject_write(struct fid_ep *ep_fid, const void *buf,
 	rma_iov.key = key;
 
 	return rxd_generic_write_inject(rxd_ep, &iov, 1, &rma_iov, 1,
-					dest_addr, NULL, ofi_op_write, 0,
+					dest_addr, NULL, RXD_WRITE, 0,
 					RXD_NO_TX_COMP | RXD_INJECT);
 }
 
@@ -289,7 +337,7 @@ ssize_t rxd_inject_writedata(struct fid_ep *ep_fid, const void *buf, size_t len,
 	rma_iov.key = key;
 
 	return rxd_generic_write_inject(rxd_ep, &iov, 1, &rma_iov, 1,
-					dest_addr, NULL, ofi_op_write,
+					dest_addr, NULL, RXD_WRITE,
 					data, RXD_NO_TX_COMP | RXD_INJECT |
 					RXD_REMOTE_CQ_DATA);
 }

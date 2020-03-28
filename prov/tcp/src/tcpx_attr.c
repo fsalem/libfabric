@@ -36,16 +36,23 @@
 #define TCPX_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
 #define TCPX_EP_CAPS	 (FI_MSG | FI_RMA | FI_RMA_PMEM)
 #define TCPX_TX_CAPS	 (FI_SEND | FI_WRITE | FI_READ)
-#define TCPX_RX_CAPS	 (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE)
+#define TCPX_RX_CAPS	 (FI_RECV | FI_REMOTE_READ | 			\
+			  FI_REMOTE_WRITE)
 
 
-#define TCPX_MSG_ORDER (FI_ORDER_RAR | FI_ORDER_RAW | FI_ORDER_RAS |	\
-			FI_ORDER_WAW | FI_ORDER_WAS |			\
+#define TCPX_MSG_ORDER (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | FI_ORDER_RAS | \
+			OFI_ORDER_WAW_SET | FI_ORDER_WAS | \
 			FI_ORDER_SAW | FI_ORDER_SAS)
 
+#define TCPX_TX_OP_FLAGS \
+	(FI_INJECT | FI_INJECT_COMPLETE | FI_TRANSMIT_COMPLETE | \
+	 FI_DELIVERY_COMPLETE | FI_COMMIT_COMPLETE | FI_COMPLETION)
+
+#define TCPX_RX_OP_FLAGS (FI_COMPLETION)
 
 static struct fi_tx_attr tcpx_tx_attr = {
 	.caps = TCPX_EP_CAPS | TCPX_TX_CAPS,
+	.op_flags = TCPX_TX_OP_FLAGS,
 	.comp_order = FI_ORDER_STRICT,
 	.msg_order = TCPX_MSG_ORDER,
 	.inject_size = 64,
@@ -56,6 +63,7 @@ static struct fi_tx_attr tcpx_tx_attr = {
 
 static struct fi_rx_attr tcpx_rx_attr = {
 	.caps = TCPX_EP_CAPS | TCPX_RX_CAPS,
+	.op_flags = TCPX_RX_OP_FLAGS,
 	.comp_order = FI_ORDER_STRICT,
 	.msg_order = TCPX_MSG_ORDER,
 	.total_buffered_recv = 0,

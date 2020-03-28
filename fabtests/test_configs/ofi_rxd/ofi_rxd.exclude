@@ -1,7 +1,9 @@
 # Regex patterns of tests to exclude in runfabtests.sh
 
-^msg|-e msg
-^dgram|-e dgram
+^fi_msg
+-e msg
+^fi_dgram
+-e dgram
 
 # Exclude all prefix tests
 -k
@@ -13,7 +15,6 @@ poll
 cq_data
 
 # Exclude tests with unsupported capabilities
-rdm_tagged_peek
 cm_data
 trigger
 shared_ctx

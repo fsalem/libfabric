@@ -131,7 +131,7 @@ static fi_addr_t rxd_set_fi_addr(struct rxd_av *av, fi_addr_t rxd_addr)
 {
 	int tries = 0;
 
-	while (av->fi_addr_table[av->rxd_addr_idx] != FI_ADDR_UNSPEC &&
+	while (av->fi_addr_table[av->fi_addr_idx] != FI_ADDR_UNSPEC &&
 	       tries < av->util_av.count) {
 		if (++av->fi_addr_idx == av->util_av.count)
 			av->fi_addr_idx = 0;
@@ -158,13 +158,14 @@ int rxd_av_insert_dg_addr(struct rxd_av *av, const void *addr,
 
 	*rxd_addr = rxd_set_rxd_addr(av, dg_addr);
 
-	ret = ofi_rbmap_insert(&av->rbmap, (void *) addr, (void *) (*rxd_addr));
-	if (ret && ret != -FI_EALREADY) {
+	ret = ofi_rbmap_insert(&av->rbmap, (void *) addr, (void *) (*rxd_addr),
+			       NULL);
+	if (ret) {
+		assert(ret != -FI_EALREADY);
 		fi_av_remove(av->dg_av, &dg_addr, 1, flags);
-		return ret;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int rxd_av_insert(struct fid_av *av_fid, const void *addr, size_t count,
@@ -254,7 +255,6 @@ static int rxd_av_remove(struct fid_av *av_fid, fi_addr_t *fi_addr, size_t count
 	fi_addr_t rxd_addr;
 	struct rxd_av *av;
 	uint8_t addr[RXD_NAME_LENGTH];
-	struct ofi_rbnode *node;
 
 	av = container_of(av_fid, struct rxd_av, util_av.av_fid);
 	fastlock_acquire(&av->util_av.lock);
@@ -267,11 +267,9 @@ static int rxd_av_remove(struct fid_av *av_fid, fi_addr_t *fi_addr, size_t count
 		if (ret)
 			goto err;
 		
-		node = ofi_rbmap_find(&av->rbmap, (void *) addr);
-		if (!node)
+		ret = ofi_rbmap_find_delete(&av->rbmap, (void *) addr);
+		if (ret)
 			goto err;
-
-		ofi_rbmap_delete(&av->rbmap, node);
 
 		ret = fi_av_remove(av->dg_av, &av->rxd_addr_table[rxd_addr].dg_addr,
 				   1, flags);
@@ -334,6 +332,7 @@ static int rxd_av_close(struct fid *fid)
 	if (ret)
 		return ret;
 
+	ofi_rbmap_cleanup(&av->rbmap);
 	ret = ofi_av_close(&av->util_av);
 	if (ret)
 		return ret;
@@ -372,8 +371,9 @@ int rxd_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 	if (attr->name)
 		return -FI_ENOSYS;
 
+	//TODO implement dynamic AV sizing
 	attr->count = roundup_power_of_two(attr->count ?
-					   attr->count : RXD_DEFAULT_AV_SIZE);
+					   attr->count : rxd_env.max_peers);
 	domain = container_of(domain_fid, struct rxd_domain, util_domain.domain_fid);
 	av = calloc(1, sizeof(*av));
 	if (!av)
@@ -396,8 +396,7 @@ int rxd_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 	if (ret)
 		goto err1;
 
-	av->rbmap.compare = &rxd_tree_compare;
-	ofi_rbmap_init(&av->rbmap);
+	ofi_rbmap_init(&av->rbmap, rxd_tree_compare);
 	for (i = 0; i < attr->count; av->fi_addr_table[i++] = FI_ADDR_UNSPEC)
 		;
 	for (i = 0; i < rxd_env.max_peers; i++) {

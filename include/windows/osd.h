@@ -22,6 +22,7 @@
 #include <Mswsock.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <process.h>
 #include <io.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@
 #include "pthread.h"
 
 #include <sys/uio.h>
+#include <time.h>
 
 #include <rdma/fi_errno.h>
 #include <rdma/fabric.h>
@@ -212,9 +214,6 @@ extern "C" {
 #define SHUT_RDWR	SD_BOTH
 #endif
 
-#ifndef _SC_PAGESIZE
-#define _SC_PAGESIZE	0
-#endif
 
 #define FI_DESTRUCTOR(func) void func
 
@@ -261,7 +260,6 @@ do						\
 #define strdup _strdup
 #define strcasecmp _stricmp
 #define snprintf _snprintf
-#define getpid (int)GetCurrentProcessId
 #define sleep(x) Sleep(x * 1000)
 
 #define __PRI64_PREFIX "ll"
@@ -275,6 +273,9 @@ do						\
 #define htonll _byteswap_uint64
 #define ntohll _byteswap_uint64
 #define strncasecmp _strnicmp
+
+typedef int pid_t;
+#define getpid (int)GetCurrentProcessId
 
 int fd_set_nonblock(int fd);
 
@@ -635,15 +636,22 @@ static inline int ffsll(long long val)
 	return 0;
 }
 
+static inline int vasprintf(char **ptr, const char *format, va_list args)
+{
+	int len = vsnprintf(0, 0, format, args);
+	*ptr = (char *)malloc(len + 1);
+	vsnprintf(*ptr, len + 1, format, args);
+	(*ptr)[len] = 0; /* to be sure that string is enclosed */
+	return len;
+}
+
 static inline int asprintf(char **ptr, const char *format, ...)
 {
 	va_list args;
-	va_start(args, format);
+	int len;
 
-	int len = vsnprintf(0, 0, format, args);
-	*ptr = (char*)malloc(len + 1);
-	vsnprintf(*ptr, len + 1, format, args);
-	(*ptr)[len] = 0; /* to be sure that string is enclosed */
+	va_start(args, format);
+	len = vasprintf(ptr, format, args);
 	va_end(args);
 
 	return len;
@@ -821,15 +829,35 @@ static inline char * strndup(char const *src, size_t n)
 	return dst;
 }
 
-static inline int ofi_sysconf(int name)
+char *strcasestr(const char *haystack, const char *needle);
+
+#ifndef _SC_PAGESIZE
+#define _SC_PAGESIZE	0
+#endif
+
+#ifndef _SC_NPROCESSORS_ONLN
+#define _SC_NPROCESSORS_ONLN 1
+#endif
+
+#ifndef _SC_PHYS_PAGES
+#define _SC_PHYS_PAGES 2
+#endif
+
+static inline long ofi_sysconf(int name)
 {
 	SYSTEM_INFO si;
+	ULONGLONG mem_size = 0;
 
 	GetSystemInfo(&si);
 
 	switch (name) {
 	case _SC_PAGESIZE:
 		return si.dwPageSize;
+	case _SC_NPROCESSORS_ONLN:
+		return si.dwNumberOfProcessors;
+	case _SC_PHYS_PAGES:
+		GetPhysicallyInstalledSystemMemory(&mem_size);
+		return mem_size / si.dwPageSize;
 	default:
 		errno = EINVAL;
 		return -1;
@@ -853,9 +881,14 @@ static inline int ofi_free_hugepage_buf(void *memptr, size_t size)
 	return -FI_ENOSYS;
 }
 
+static inline int ofi_hugepage_enabled(void)
+{
+	return 0;
+}
+
 static inline int ofi_is_loopback_addr(struct sockaddr *addr) {
 	return (addr->sa_family == AF_INET &&
-		((struct sockaddr_in *)addr)->sin_addr.s_addr == ntohl(INADDR_LOOPBACK)) ||
+		((struct sockaddr_in *)addr)->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) ||
 		(addr->sa_family == AF_INET6 &&
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[0] == 0 &&
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[1] == 0 &&
@@ -864,7 +897,28 @@ static inline int ofi_is_loopback_addr(struct sockaddr *addr) {
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[4] == 0 &&
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[5] == 0 &&
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[6] == 0 &&
-		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[7] == ntohs(1));
+		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[7] == htons(1));
+}
+
+size_t ofi_ifaddr_get_speed(struct ifaddrs *ifa);
+
+#define file2unix_time	10000000i64
+#define win2unix_epoch	116444736000000000i64
+#define CLOCK_MONOTONIC 1
+
+/* Own implementation of clock_gettime*/
+static inline
+int clock_gettime(int which_clock, struct timespec *spec)
+{
+	__int64 wintime;
+
+	GetSystemTimeAsFileTime((FILETIME*)&wintime);
+	wintime -= win2unix_epoch;
+
+	spec->tv_sec = wintime / file2unix_time;
+	spec->tv_nsec = wintime % file2unix_time * 100;
+
+	return 0;
 }
 
 /* complex operations implementation */
@@ -972,28 +1026,6 @@ ofi_cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
 
 #endif /* defined(_M_X64) || defined(_M_AMD64) */
 
-typedef void (*ofi_mem_free_hook)(void *, const void *);
-typedef void *(*ofi_mem_realloc_hook)(void *, size_t, const void *);
-
-static inline void ofi_set_mem_free_hook(ofi_mem_free_hook free_hook)
-{
-	OFI_UNUSED(free_hook);
-}
-
-static inline void ofi_set_mem_realloc_hook(ofi_mem_realloc_hook realloc_hook)
-{
-	OFI_UNUSED(realloc_hook);
-}
-
-static inline ofi_mem_free_hook ofi_get_mem_free_hook(void)
-{
-	return NULL;
-}
-
-static inline ofi_mem_realloc_hook ofi_get_mem_realloc_hook(void)
-{
-	return NULL;
-}
 
 #ifdef __cplusplus
 }

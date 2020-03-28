@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2019 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -32,6 +32,38 @@
 
 #include "psmx2.h"
 
+#define PSMX2_EP_SET_TAGGED_OPS(suffix, msg_suffix)				\
+	do {									\
+		if (!send_completion && !recv_completion) {			\
+			ep->ep.tagged = &psmx2_tagged_ops_no_event##suffix;	\
+			FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,			\
+				"tagged ops optimized for op_flags=0 "		\
+				"and event suppression "			\
+				msg_suffix					\
+				"\n");						\
+		} else if (!send_completion) {					\
+			ep->ep.tagged = &psmx2_tagged_ops_no_send_event##suffix;\
+			FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,			\
+				"tagged ops optimized for op_flags=0 "		\
+				"and send event suppression "			\
+				msg_suffix					\
+				"\n");						\
+		} else if (!recv_completion) {					\
+			ep->ep.tagged = &psmx2_tagged_ops_no_recv_event##suffix;\
+			FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,			\
+				"tagged ops optimized for op_flags=0 "		\
+				"and recv event suppression "			\
+				msg_suffix					\
+				"\n");						\
+		} else {							\
+			ep->ep.tagged = &psmx2_tagged_ops_no_flag##suffix;	\
+			FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,			\
+				"tagged ops optimized for op_flags=0 "		\
+				msg_suffix					\
+				"\n");						\
+		}								\
+	} while (0)
+
 static void psmx2_ep_optimize_ops(struct psmx2_fid_ep *ep)
 {
 	int send_completion;
@@ -50,45 +82,18 @@ static void psmx2_ep_optimize_ops(struct psmx2_fid_ep *ep)
 			send_completion = !ep->send_selective_completion || ep->tx_flags & FI_COMPLETION;
 			recv_completion = !ep->recv_selective_completion || ep->rx_flags & FI_COMPLETION;
 
-			if (ep->caps & FI_DIRECTED_RECV) {
-				if (!send_completion && !recv_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_event_directed;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and event suppression and directed receive\n");
-				} else if (!send_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_send_event_directed;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and send event suppression and directed receive\n");
-				} else if (!recv_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_recv_event_directed;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and recv event suppression and directed receive\n");
-				} else {
-					ep->ep.tagged = &psmx2_tagged_ops_no_flag_directed;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and directed receive\n");
-				}
+			if (ep->av && ep->av->type == FI_AV_MAP) {
+				if (ep->caps & FI_DIRECTED_RECV)
+					PSMX2_EP_SET_TAGGED_OPS(_directed_av_map, "and directed receive and av map");
+				else
+					PSMX2_EP_SET_TAGGED_OPS(_undirected_av_map, "and av map");
 			} else {
-				if (!send_completion && !recv_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_event_undirected;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and event suppression\n");
-				} else if (!send_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_send_event_undirected;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and send event suppression\n");
-				} else if (!recv_completion) {
-					ep->ep.tagged = &psmx2_tagged_ops_no_recv_event_undirected;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0 and recv event suppression\n");
-				} else {
-					ep->ep.tagged = &psmx2_tagged_ops_no_flag_undirected;
-					FI_INFO(&psmx2_prov, FI_LOG_EP_DATA,
-						"tagged ops optimized for op_flags=0\n");
-				}
+				if (ep->caps & FI_DIRECTED_RECV)
+					PSMX2_EP_SET_TAGGED_OPS(_directed, "and directed receive");
+				else
+					PSMX2_EP_SET_TAGGED_OPS(_undirected, "");
 			}
 		}
-
 	}
 }
 
@@ -944,18 +949,18 @@ int psmx2_sep_open(struct fid_domain *domain, struct fi_info *info,
 		goto errout;
 
 	if (info && info->ep_attr) {
-		if (info->ep_attr->tx_ctx_cnt > psmx2_env.max_trx_ctxt) {
+		if (info->ep_attr->tx_ctx_cnt > psmx2_hfi_info.max_trx_ctxt) {
 			FI_WARN(&psmx2_prov, FI_LOG_EP_CTRL,
 				"tx_ctx_cnt %"PRIu64" exceed limit %d.\n",
 				info->ep_attr->tx_ctx_cnt,
-				psmx2_env.max_trx_ctxt);
+				psmx2_hfi_info.max_trx_ctxt);
 			goto errout;
 		}
-		if (info->ep_attr->rx_ctx_cnt > psmx2_env.max_trx_ctxt) {
+		if (info->ep_attr->rx_ctx_cnt > psmx2_hfi_info.max_trx_ctxt) {
 			FI_WARN(&psmx2_prov, FI_LOG_EP_CTRL,
 				"rx_ctx_cnt %"PRIu64" exceed limit %d.\n",
 				info->ep_attr->rx_ctx_cnt,
-				psmx2_env.max_trx_ctxt);
+				psmx2_hfi_info.max_trx_ctxt);
 			goto errout;
 		}
 		ctxt_cnt = info->ep_attr->tx_ctx_cnt;

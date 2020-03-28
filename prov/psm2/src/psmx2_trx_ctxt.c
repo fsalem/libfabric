@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2019 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -47,30 +47,36 @@ int psmx2_trx_ctxt_cnt = 0;
  */
 
 struct disconnect_args {
-	psm2_ep_t	ep;
-	psm2_epaddr_t	epaddr;
+	struct psmx2_trx_ctxt	*trx_ctxt;
+	psm2_epaddr_t		epaddr;
 };
 
 static void *disconnect_func(void *args)
 {
 	struct disconnect_args *disconn = args;
+	struct psmx2_trx_ctxt *trx_ctxt = disconn->trx_ctxt;
+	struct psmx2_epaddr_context *epaddr_context;
 	psm2_error_t errors;
 
 	FI_INFO(&psmx2_prov, FI_LOG_CORE,
-		"psm2_ep: %p, epaddr: %p\n", disconn->ep, disconn->epaddr);
+		"psm2_ep: %p, epaddr: %p\n", trx_ctxt->psm2_ep, disconn->epaddr);
 
-	psm2_ep_disconnect2(disconn->ep, 1, &disconn->epaddr, NULL,
+	trx_ctxt->domain->peer_lock_fn(&trx_ctxt->peer_lock, 2);
+	dlist_remove_first_match(&trx_ctxt->peer_list,
+				 psmx2_peer_match, disconn->epaddr);
+	trx_ctxt->domain->peer_unlock_fn(&trx_ctxt->peer_lock, 2);
+	if (trx_ctxt->ep && trx_ctxt->ep->av)
+		psmx2_av_remove_conn(trx_ctxt->ep->av, trx_ctxt, disconn->epaddr);
+
+	epaddr_context = psm2_epaddr_getctxt(disconn->epaddr);
+	psm2_epaddr_setctxt(disconn->epaddr, NULL);
+	free(epaddr_context);
+
+	psm2_ep_disconnect2(trx_ctxt->psm2_ep, 1, &disconn->epaddr, NULL,
 			    &errors, PSM2_EP_DISCONNECT_FORCE, 0);
+
 	free(args);
 	return NULL;
-}
-
-static int psmx2_peer_match(struct dlist_entry *item, const void *arg)
-{
-	struct psmx2_epaddr_context *peer;
-
-	peer = container_of(item, struct psmx2_epaddr_context, entry);
-	return  (peer->epaddr == arg);
 }
 
 int psmx2_am_trx_ctxt_handler(psm2_am_token_t token, psm2_amarg_t *args,
@@ -93,16 +99,14 @@ int psmx2_am_trx_ctxt_handler(psm2_am_token_t token, psm2_amarg_t *args,
 		 * we can't call psm2_ep_disconnect from the AM
 		 * handler. instead, create a thread to do the work.
 		 * the performance of this operation is not important.
+		 *
+		 * also put the av cleanup operations into the thread
+		 * to avoid deadlock because the AM handler may be
+		 * called with the av lock held.
 		 */
 		disconn = malloc(sizeof(*disconn));
 		if (disconn) {
-			trx_ctxt->domain->peer_lock_fn(&trx_ctxt->peer_lock, 2);
-			dlist_remove_first_match(&trx_ctxt->peer_list,
-						 psmx2_peer_match, epaddr);
-			trx_ctxt->domain->peer_unlock_fn(&trx_ctxt->peer_lock, 2);
-			if (trx_ctxt->ep && trx_ctxt->ep->av)
-				psmx2_av_remove_conn(trx_ctxt->ep->av, trx_ctxt, epaddr);
-			disconn->ep = trx_ctxt->psm2_ep;
+			disconn->trx_ctxt = trx_ctxt;
 			disconn->epaddr = epaddr;
 			pthread_create(&disconnect_thread, NULL,
 				       disconnect_func, disconn);
@@ -138,9 +142,11 @@ void psmx2_trx_ctxt_disconnect_peers(struct psmx2_trx_ctxt *trx_ctxt)
 
 	dlist_foreach_safe(&peer_list, item, tmp) {
 		peer = container_of(item, struct psmx2_epaddr_context, entry);
-		FI_INFO(&psmx2_prov, FI_LOG_CORE, "epaddr: %p\n", peer->epaddr);
-		psm2_am_request_short(peer->epaddr, PSMX2_AM_TRX_CTXT_HANDLER,
-				      &arg, 1, NULL, 0, 0, NULL, NULL);
+		if (psmx2_env.disconnect) {
+			FI_INFO(&psmx2_prov, FI_LOG_CORE, "epaddr: %p\n", peer->epaddr);
+			psm2_am_request_short(peer->epaddr, PSMX2_AM_TRX_CTXT_HANDLER,
+					      &arg, 1, NULL, 0, 0, NULL, NULL);
+		}
 		psm2_epaddr_setctxt(peer->epaddr, NULL);
 		free(peer);
 	}
@@ -183,8 +189,7 @@ void psmx2_trx_ctxt_free(struct psmx2_trx_ctxt *trx_ctxt, int usage_flags)
 	dlist_remove(&trx_ctxt->entry);
 	trx_ctxt->domain->trx_ctxt_unlock_fn(&trx_ctxt->domain->trx_ctxt_lock, 1);
 
-	if (psmx2_env.disconnect)
-		psmx2_trx_ctxt_disconnect_peers(trx_ctxt);
+	psmx2_trx_ctxt_disconnect_peers(trx_ctxt);
 
 	if (trx_ctxt->am_initialized)
 		psmx2_am_fini(trx_ctxt);
@@ -212,7 +217,7 @@ void psmx2_trx_ctxt_free(struct psmx2_trx_ctxt *trx_ctxt, int usage_flags)
 	if (err != PSM2_OK)
 		psm2_ep_close(trx_ctxt->psm2_ep, PSM2_EP_CLOSE_FORCE, 0);
 
-	util_buf_pool_destroy(trx_ctxt->am_req_pool);
+	ofi_bufpool_destroy(trx_ctxt->am_req_pool);
 	fastlock_destroy(&trx_ctxt->am_req_pool_lock);
 	fastlock_destroy(&trx_ctxt->poll_lock);
 	fastlock_destroy(&trx_ctxt->peer_lock);
@@ -252,10 +257,10 @@ struct psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 		domain->trx_ctxt_unlock_fn(&domain->trx_ctxt_lock, 1);
 	}
 
-	if (psmx2_trx_ctxt_cnt >= psmx2_env.max_trx_ctxt) {
+	if (psmx2_trx_ctxt_cnt >= psmx2_hfi_info.max_trx_ctxt) {
 		FI_WARN(&psmx2_prov, FI_LOG_CORE,
 			"number of Tx/Rx contexts exceeds limit (%d).\n",
-			psmx2_env.max_trx_ctxt);
+			psmx2_hfi_info.max_trx_ctxt);
 		return NULL;
 	}
 
@@ -266,11 +271,9 @@ struct psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 		return NULL;
 	}
 
-	err = util_buf_pool_create(&trx_ctxt->am_req_pool,
-				   sizeof(struct psmx2_am_request),
-				   sizeof(void *),
-				   0, /* max_cnt: unlimited */
-				   64); /* chunk_cnt */
+	err = ofi_bufpool_create(&trx_ctxt->am_req_pool,
+				 sizeof(struct psmx2_am_request),
+				 sizeof(void *), 0, 64, 0);
 	if (err) {
 		FI_WARN(&psmx2_prov, FI_LOG_CORE,
 			"failed to allocate am_req_pool.\n");
@@ -298,10 +301,8 @@ struct psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 	if (err != PSM2_OK) {
 		FI_WARN(&psmx2_prov, FI_LOG_CORE,
 			"psm2_ep_open returns %d, errno=%d\n", err, errno);
-		if (!should_retry) {
-			err = psmx2_errno(err);
+		if (!should_retry)
 			goto err_out_destroy_pool;
-		}
 
 		/* When round-robin fails, retry w/o explicit assignment */
 		opts.unit = -1;
@@ -310,7 +311,6 @@ struct psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 		if (err != PSM2_OK) {
 			FI_WARN(&psmx2_prov, FI_LOG_CORE,
 				"psm2_ep_open retry returns %d, errno=%d\n", err, errno);
-			err = psmx2_errno(err);
 			goto err_out_destroy_pool;
 		}
 	}
@@ -324,7 +324,6 @@ struct psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 	if (err != PSM2_OK) {
 		FI_WARN(&psmx2_prov, FI_LOG_CORE,
 			"psm2_mq_init returns %d, errno=%d\n", err, errno);
-		err = psmx2_errno(err);
 		goto err_out_close_ep;
 	}
 
@@ -356,7 +355,7 @@ err_out_close_ep:
 		psm2_ep_close(trx_ctxt->psm2_ep, PSM2_EP_CLOSE_FORCE, 0);
 
 err_out_destroy_pool:
-	util_buf_pool_destroy(trx_ctxt->am_req_pool);
+	ofi_bufpool_destroy(trx_ctxt->am_req_pool);
 
 err_out:
 	free(trx_ctxt);
